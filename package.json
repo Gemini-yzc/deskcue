@@ -4,6 +4,14 @@
   "description": "Sticky notes for the Windows 10/11 desktop",
   "main": "main.js",
   "author": "Wilkcraft",
+  "homepage": "https://stikly.wilkcraft.work/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TU_USUARIO/stikly.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TU_USUARIO/stikly/issues"
+  },
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
