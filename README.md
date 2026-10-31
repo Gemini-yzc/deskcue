@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="icon.png" alt="Stikly icon" width="96" />
+<img src="build/icon.png" alt="Stikly icon" width="96" />
 
 # Stikly
 
