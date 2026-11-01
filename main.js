@@ -550,9 +550,9 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 }
 
-const { net, Notification } = require("electron"); // añade net y Notification al require existente
+const { net, Notification } = require("electron");
 
-app.setAppUserModelId("com.wilkcraft.stikly"); // = appId del package.json
+app.setAppUserModelId("com.wilkcraft.stikly");
 
 const REPO = "wilkcraft/stikly";
 const DOWNLOAD_URL = "https://stikly.wilkcraft.work/#download";
@@ -614,7 +614,6 @@ async function checkForUpdates() {
     };
     pushUpdateToLibrary();
 
-    // Aviso del sistema, una sola vez por versión
     if (
       loadSettings().lastNotifiedVersion !== version &&
       Notification.isSupported()
@@ -635,7 +634,7 @@ async function checkForUpdates() {
 function startUpdateChecks() {
   clearInterval(updateTimer);
   checkForUpdates();
-  updateTimer = setInterval(checkForUpdates, 12 * 60 * 60 * 1000); // la app vive en la bandeja
+  updateTimer = setInterval(checkForUpdates, 12 * 60 * 60 * 1000);
 }
 
 function stopUpdateChecks() {
