@@ -344,7 +344,68 @@ function applyZOrder(win, zOrder) {
   }
 }
 
+function isVisibleOnSomeDisplay(b) {
+  const MIN = 50;
+  return screen.getAllDisplays().some((d) => {
+    const wa = d.workArea;
+    const ix = Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x);
+    const iy = Math.min(b.y + b.height, wa.y + wa.height) - Math.max(b.y, wa.y);
+    return ix >= MIN && iy >= MIN;
+  });
+}
+
+let rescueTimer = null;
+function scheduleRescue() {
+  clearTimeout(rescueTimer);
+  rescueTimer = setTimeout(rescueOffscreenNotes, 600);
+}
+
+let rescuing = false;
+async function rescueOffscreenNotes() {
+  if (rescuing) return;
+  rescuing = true;
+  try {
+    const wa = screen.getPrimaryDisplay().workArea;
+    let n = 0;
+    for (const win of noteWindows.values()) {
+      if (win.isDestroyed()) continue;
+      const b = win.getBounds();
+      if (isVisibleOnSomeDisplay(b)) continue;
+
+      const width = Math.min(b.width, wa.width);
+      const height = Math.min(b.height, wa.height);
+      const step = (n++ % 10) * 25;
+      const x = Math.min(wa.x + 40 + step, wa.x + wa.width - width);
+      const y = Math.min(wa.y + 40 + step, wa.y + wa.height - height);
+
+      const isDesktop = win.noteData?.zOrder === "desktop";
+      if (isDesktop) await applyWindowsModeAsync(win, "normal").catch(() => {});
+      if (win.isDestroyed()) continue;
+      win.setBounds({ x, y, width, height });
+      if (isDesktop) applyZOrder(win, "desktop");
+    }
+  } finally {
+    rescuing = false;
+  }
+}
+
 function createNoteWindow(note, filePath) {
+  const probe = {
+    x: note.x,
+    y: note.y,
+    width: note.width || 260,
+    height: note.height || 260,
+  };
+  if (
+    typeof note.x === "number" &&
+    typeof note.y === "number" &&
+    !isVisibleOnSomeDisplay(probe)
+  ) {
+    const wa = screen.getPrimaryDisplay().workArea;
+    note.x = wa.x + 40;
+    note.y = wa.y + 40;
+  }
+
   const win = new BrowserWindow({
     x: note.x,
     y: note.y,
@@ -489,17 +550,136 @@ function createTray() {
   tray.setContextMenu(contextMenu);
 }
 
+const { net, Notification } = require("electron"); // añade net y Notification al require existente
+
+app.setAppUserModelId("com.wilkcraft.stikly"); // = appId del package.json
+
+const REPO = "wilkcraft/stikly";
+const DOWNLOAD_URL = "https://stikly.wilkcraft.work/#download";
+let updateInfo = null;
+let updateTimer = null;
+
+function parseVersion(v) {
+  return String(v)
+    .trim()
+    .replace(/^v/i, "")
+    .split("-")[0]
+    .split(".")
+    .map((n) => parseInt(n, 10) || 0);
+}
+
+function isNewer(remote, local) {
+  const a = parseVersion(remote),
+    b = parseVersion(local);
+  for (let i = 0; i < 3; i++) {
+    if ((a[i] || 0) > (b[i] || 0)) return true;
+    if ((a[i] || 0) < (b[i] || 0)) return false;
+  }
+  return false;
+}
+
+function pushUpdateToLibrary() {
+  if (libraryWindow && !libraryWindow.isDestroyed()) {
+    libraryWindow.webContents.send("update-available", updateInfo);
+  }
+}
+
+async function checkForUpdates() {
+  try {
+    const res = await net.fetch(
+      `https://api.github.com/repos/${REPO}/releases/latest`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          "User-Agent": "Stikly",
+        },
+      },
+    );
+    if (!res.ok) return;
+    const rel = await res.json();
+    if (!rel.tag_name || rel.draft || rel.prerelease) return;
+
+    if (!isNewer(rel.tag_name, app.getVersion())) {
+      updateInfo = null;
+      pushUpdateToLibrary();
+      return;
+    }
+
+    const version = String(rel.tag_name).replace(/^v/i, "");
+    updateInfo = {
+      version,
+      name: rel.name || `Stikly ${version}`,
+      body: rel.body || "",
+      published: rel.published_at || null,
+    };
+    pushUpdateToLibrary();
+
+    // Aviso del sistema, una sola vez por versión
+    if (
+      loadSettings().lastNotifiedVersion !== version &&
+      Notification.isSupported()
+    ) {
+      const n = new Notification({
+        title: "Stikly update available",
+        body: `Version ${version} is out. Click to see what's new.`,
+      });
+      n.on("click", () => createLibraryWindow());
+      n.show();
+      saveSettings({ lastNotifiedVersion: version });
+    }
+  } catch (e) {
+    console.error("Update check failed:", e.message);
+  }
+}
+
+function startUpdateChecks() {
+  clearInterval(updateTimer);
+  checkForUpdates();
+  updateTimer = setInterval(checkForUpdates, 12 * 60 * 60 * 1000); // la app vive en la bandeja
+}
+
+function stopUpdateChecks() {
+  clearInterval(updateTimer);
+  updateTimer = null;
+  updateInfo = null;
+  pushUpdateToLibrary();
+}
+
+async function initUpdates(parent) {
+  let s = loadSettings();
+  if (typeof s.updateChecks !== "boolean") {
+    const opts = {
+      type: "question",
+      title: "Stikly",
+      message: "Get notified about new versions?",
+      detail:
+        "Stikly can check GitHub from time to time to see if a new version is available. " +
+        "Nothing is installed automatically and no personal data is sent. " +
+        "You can change this later in My notes.",
+      buttons: ["Yes, notify me", "No, thanks"],
+      defaultId: 0,
+      cancelId: 1,
+    };
+    const { response } =
+      parent && !parent.isDestroyed()
+        ? await dialog.showMessageBox(parent, opts)
+        : await dialog.showMessageBox(opts);
+    saveSettings({ updateChecks: response === 0 });
+    s = loadSettings();
+  }
+  if (s.updateChecks) startUpdateChecks();
+}
+
 app.whenReady().then(() => {
   applyThemePreference(loadSettings().theme);
   fs.mkdirSync(notesFolder, { recursive: true });
   migrateLegacyNotes();
   createTray();
 
-  if (listSavedNotes().length === 0) {
-    createNewNote();
-  } else {
-    createLibraryWindow();
-  }
+  createLibraryWindow();
+
+  screen.on("display-removed", scheduleRescue);
+  screen.on("display-metrics-changed", scheduleRescue);
 
   setInterval(() => {
     for (const win of noteWindows.values()) {
@@ -996,4 +1176,21 @@ ipcMain.handle("library:set-theme", (event, pref) => {
   const theme = applyThemePreference(pref);
   saveSettings({ theme });
   return theme;
+});
+
+ipcMain.handle("update:get", () => updateInfo);
+ipcMain.handle("update:download", () => shell.openExternal(DOWNLOAD_URL));
+ipcMain.handle("update:open-link", (e, url) => {
+  if (typeof url === "string" && /^https:\/\//i.test(url))
+    return shell.openExternal(url);
+});
+ipcMain.handle(
+  "update:get-enabled",
+  () => loadSettings().updateChecks === true,
+);
+ipcMain.handle("update:set-enabled", (e, on) => {
+  saveSettings({ updateChecks: !!on });
+  if (on) startUpdateChecks();
+  else stopUpdateChecks();
+  return !!on;
 });

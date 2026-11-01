@@ -267,4 +267,116 @@ themeButtons.forEach((b) =>
 );
 window.libraryAPI.getTheme().then(markTheme);
 
+const updateBtn = document.getElementById("updateBtn");
+const updateModal = document.getElementById("updateModal");
+const updateTitle = document.getElementById("updateTitle");
+const updateBody = document.getElementById("updateBody");
+const updateOpt = document.getElementById("updateOpt");
+let currentUpdate = null;
+
+function renderInline(text, parent) {
+  const re =
+    /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\(https:\/\/[^)\s]+\))/g;
+  let last = 0,
+    m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parent.append(text.slice(last, m.index));
+    const t = m[0];
+    if (t.startsWith("**"))
+      parent.appendChild(el("strong", "", t.slice(2, -2)));
+    else if (t.startsWith("`"))
+      parent.appendChild(el("code", "", t.slice(1, -1)));
+    else if (t.startsWith("[")) {
+      const [, label, url] = /^\[([^\]]+)\]\((.+)\)$/.exec(t);
+      const a = el("a", "", label);
+      a.addEventListener("click", () => window.libraryAPI.openLink(url));
+      parent.appendChild(a);
+    } else parent.appendChild(el("em", "", t.slice(1, -1)));
+    last = re.lastIndex;
+  }
+  if (last < text.length) parent.append(text.slice(last));
+}
+
+function renderMarkdown(md, target) {
+  target.replaceChildren();
+  let para = [],
+    list = null;
+  const flush = () => {
+    if (!para.length) return;
+    const p = el("p");
+    renderInline(para.join(" "), p);
+    target.appendChild(p);
+    para = [];
+  };
+  const addItem = (tag, text) => {
+    flush();
+    if (!list || list.tagName.toLowerCase() !== tag) {
+      list = el(tag);
+      target.appendChild(list);
+    }
+    const li = el("li");
+    renderInline(text, li);
+    list.appendChild(li);
+  };
+  for (const raw of String(md).replace(/\r\n/g, "\n").split("\n")) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) {
+      flush();
+      list = null;
+      continue;
+    }
+    if ((m = /^(#{1,6})\s+(.*)$/.exec(line))) {
+      flush();
+      list = null;
+      const h = el("h" + Math.min(m[1].length + 2, 6));
+      renderInline(m[2], h);
+      target.appendChild(h);
+    } else if ((m = /^\s*[-*+]\s+(.*)$/.exec(line))) addItem("ul", m[1]);
+    else if ((m = /^\s*\d+\.\s+(.*)$/.exec(line))) addItem("ol", m[1]);
+    else {
+      list = null;
+      para.push(line.trim());
+    }
+  }
+  flush();
+}
+
+function setUpdate(info) {
+  currentUpdate = info;
+  updateBtn.hidden = !info;
+}
+
+function showUpdate() {
+  if (!currentUpdate) return;
+  updateTitle.textContent = `${currentUpdate.name}`;
+  renderMarkdown(currentUpdate.body || "No release notes.", updateBody);
+  updateModal.hidden = false;
+}
+
+updateBtn.addEventListener("click", showUpdate);
+document
+  .getElementById("updateClose")
+  .addEventListener("click", () => (updateModal.hidden = true));
+document
+  .getElementById("updateDownload")
+  .addEventListener("click", () => window.libraryAPI.openDownload());
+updateModal.addEventListener("click", (e) => {
+  if (e.target === updateModal) updateModal.hidden = true;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") updateModal.hidden = true;
+});
+
+updateOpt.addEventListener("change", async () => {
+  updateOpt.checked = await window.libraryAPI.setUpdateChecks(
+    updateOpt.checked,
+  );
+  if (!updateOpt.checked) setUpdate(null);
+});
+
+window.libraryAPI.onUpdate(setUpdate);
+window.libraryAPI.getUpdate().then(setUpdate);
+window.libraryAPI.getUpdateChecks().then((v) => (updateOpt.checked = v));
+
 refresh();

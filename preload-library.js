@@ -10,4 +10,10 @@ contextBridge.exposeInMainWorld("libraryAPI", {
   openFolder: () => ipcRenderer.invoke("library:open-folder"),
   getTheme: () => ipcRenderer.invoke("library:get-theme"),
   setTheme: (theme) => ipcRenderer.invoke("library:set-theme", theme),
+  getUpdate: () => ipcRenderer.invoke("update:get"),
+  onUpdate: (cb) => ipcRenderer.on("update-available", (e, d) => cb(d)),
+  openDownload: () => ipcRenderer.invoke("update:download"),
+  openLink: (url) => ipcRenderer.invoke("update:open-link", url),
+  getUpdateChecks: () => ipcRenderer.invoke("update:get-enabled"),
+  setUpdateChecks: (on) => ipcRenderer.invoke("update:set-enabled", on),
 });

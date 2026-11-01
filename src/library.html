@@ -16,6 +16,9 @@
           <img src="../build/icon.png" alt="" class="brand-badge" />
           Stikly
         </div>
+        <button type="button" id="updateBtn" class="update-btn" hidden>
+          ⬆ New version available
+        </button>
         <div class="theme-switch" role="group" aria-label="Theme">
           <button
             type="button"
@@ -63,7 +66,30 @@
         Click a note to open it · Shift + click to open it without closing this
         panel
       </p>
+      <label class="update-opt">
+        <input type="checkbox" id="updateOpt" /> Notify me about new versions
+      </label>
     </main>
+
+    <div id="updateModal" class="modal" hidden>
+      <div
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="updateTitle"
+      >
+        <h2 id="updateTitle"></h2>
+        <div id="updateBody" class="md"></div>
+        <div class="modal-actions">
+          <button type="button" id="updateClose" class="paper-btn secondary">
+            Later
+          </button>
+          <button type="button" id="updateDownload" class="paper-btn primary">
+            Go to download page
+          </button>
+        </div>
+      </div>
+    </div>
 
     <script src="library.js"></script>
   </body>

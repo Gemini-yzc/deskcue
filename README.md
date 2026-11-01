@@ -48,6 +48,9 @@ or from the [Releases](https://github.com/wilkcraft/stikly/releases) page.
 - **Auto-save on exit** – every note with text is saved automatically, named after its first line.
 - **Light / dark theme** – follows Windows or can be set manually.
 - **System tray** – create a note or close them all from the tray icon.
+- **Always starts on your notes** – Stikly opens the "My notes" panel on every launch; create a new note from there with one click.
+- **Multi-monitor safe** – if a monitor is unplugged, notes that were on it are moved to your main screen automatically.
+- **Update notifications (optional)** – Stikly can check GitHub Releases for new versions. It asks on first run and nothing is installed automatically.
 
 ### 📌 Three ways to pin a note
 
@@ -67,18 +70,20 @@ Every note is saved as its own `.json` file in:
 
 To back up your notes, just copy that folder.
 
+- **Update notifications (optional)** – Stikly can check GitHub Releases for new versions. It asks on first run and nothing is installed automatically.
+
 ## 🧠 How it works
 
 Stikly is an [Electron](https://www.electronjs.org/) app that also talks directly
 to the Windows API to move notes between desktop layers.
 
-| File                                 | Purpose                                                                                |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| `main.js`                            | Electron main process: creates note windows, saves notes, tray icon and notes panel.   |
-| `preload.js`                         | Safe bridge (`contextBridge`) between the UI and the main process.                     |
-| `note.html` / `note.js` / `note.css` | The note interface: text area, format bar, color and position menus.                   |
-| `library.html` / `.js` / `.css`      | The "My notes" panel. Previews are rebuilt through a strict HTML sanitizer.            |
-| `windows-window.ps1` + `.cs`         | Compiles C# at runtime and calls `SetParent` / `SetWindowPos` to change window layers. |
+| File                                 | Purpose                                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `main.js`                            | Electron main process: creates note windows, saves notes, tray icon, notes panel and display-change handling. |
+| `preload.js`                         | Safe bridge (`contextBridge`) between the UI and the main process.                                            |
+| `note.html` / `note.js` / `note.css` | The note interface: text area, format bar, color and position menus.                                          |
+| `library.html` / `.js` / `.css`      | The "My notes" panel. Previews are rebuilt through a strict HTML sanitizer.                                   |
+| `windows-window.ps1` + `.cs`         | Compiles C# at runtime and calls `SetParent` / `SetWindowPos` to change window layers.                        |
 
 ## 🛠️ Run from source
 
@@ -86,7 +91,7 @@ to the Windows API to move notes between desktop layers.
 
 ```bash
 # Clone the repository
-git clone https://github.com/TU_USUARIO/stikly.git
+git clone https://github.com/wilkcraft/stikly.git
 cd stikly
 
 # Install dependencies
