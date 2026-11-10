@@ -1,0 +1,84 @@
+name: Publish verified Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Windows CI run ID in this repository
+        required: true
+        type: string
+      tag_name:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      TAG_NAME: ${{ inputs.tag_name }}
+    steps:
+      - name: Validate build and release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh api "repos/$REPO/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/build.json"
+          jq -e --arg repo "$REPO" '.conclusion == "success" and .head_repository.full_name == $repo and .name == "Windows checks and package"' "$RUNNER_TEMP/build.json"
+          echo "BUILD_SHA=$(jq -r .head_sha "$RUNNER_TEMP/build.json")" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeskCue-windows-x64
+          path: release-files
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+      - name: Verify checksums and exclude personal data
+        shell: bash
+        working-directory: release-files
+        run: |
+          set -euo pipefail
+          EXE="DeskCue-${TAG_NAME#v}-windows-x64.exe"
+          ZIP="DeskCue-${TAG_NAME#v}-windows-x64.zip"
+          export EXE ZIP
+          sha256sum -c SHA256SUMS.txt
+          node <<'NODE'
+          const fs = require('node:fs');
+          const cp = require('node:child_process');
+          const expected = [process.env.EXE, process.env.ZIP, 'SHA256SUMS.txt'].sort();
+          if (JSON.stringify(fs.readdirSync('.').sort()) !== JSON.stringify(expected)) throw new Error('Unexpected release artifact files');
+          const entries = cp.execFileSync('unzip', ['-Z1', process.env.ZIP], { encoding: 'utf8' }).trim().split(/\r?\n/);
+          const allowed = new Set([process.env.EXE, 'CONTRIBUTING.md', 'LICENSE', 'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md', '使用说明.txt', 'docs/images/panel.png']);
+          if (entries.length !== allowed.size || entries.some(entry => !allowed.has(entry))) throw new Error('ZIP contains unexpected files or personal data');
+          const crypto = require('node:crypto');
+          const embedded = cp.execFileSync('unzip', ['-p', process.env.ZIP, process.env.EXE], { maxBuffer: 200 * 1024 * 1024 });
+          const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+          if (hash(embedded) !== hash(fs.readFileSync(process.env.EXE))) throw new Error('ZIP and standalone EXE differ');
+          console.log('Verified explicit file allowlist, no data, matching EXE, and SHA256 checksums');
+          NODE
+      - name: Upload assets and publish
+        shell: bash
+        working-directory: release-files
+        run: |
+          set -euo pipefail
+          RELEASE_ID=$(gh api "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG_NAME\") | .id" | head -n 1)
+          if [ -z "$RELEASE_ID" ]; then
+            gh release create "$TAG_NAME" --repo "$REPO" --target "$BUILD_SHA" --draft --title "DeskCue $TAG_NAME · Windows Portable" --notes "Windows x64 portable release. Download the EXE and double-click to run. No data directory, personal tasks, backups, or runtime cache is included."
+            RELEASE_ID=$(gh api "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG_NAME\") | .id" | head -n 1)
+          fi
+          gh api "repos/$REPO/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          jq -e '.draft == true' "$RUNNER_TEMP/release.json"
+          [[ "$(jq -r .target_commitish "$RUNNER_TEMP/release.json")" == "$BUILD_SHA" ]]
+          while read -r ASSET_ID; do
+            [ -z "$ASSET_ID" ] || gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"
+          done < <(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --jq '.[] | select(.state == "starter") | .id')
+          gh release upload "$TAG_NAME" "DeskCue-${TAG_NAME#v}-windows-x64.exe" "DeskCue-${TAG_NAME#v}-windows-x64.zip" SHA256SUMS.txt --repo "$REPO" --clobber
+          gh release edit "$TAG_NAME" --repo "$REPO" --draft=false --latest
+          gh release view "$TAG_NAME" --repo "$REPO" --json url,assets
