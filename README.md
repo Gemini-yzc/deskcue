@@ -104,6 +104,8 @@ docs/SPEC.md             已确认的功能规格
 
 测试使用 Node.js 自带 node:test，覆盖提醒临界时间、每日重置、等待转换、闰年保留期、输入校验、排序、写入失败和备份恢复。GitHub Actions 在 Windows 上安装依赖、检查、测试和打包，EXE 作为构建附件，不自动创建 Release。
 
+正式发布使用单独的手动工作流 **Publish verified Windows release**：填入本仓库成功的 Windows CI run ID 和版本标签（如 v0.1.0）。工作流复用该次构建的附件，验证 SHA256、ZIP 文件白名单及内嵌 EXE 一致性后上传 Release；只发布 EXE、ZIP 和校验文件，不上传 data、备份或缓存。已公开的 Release 不会被该流程覆盖，日常推送也不会自动发布。
+
 本地验证：13 项业务与存储测试通过；源码版、便携 EXE 的界面保存、每日确认、分类转换、取消恢复、摘要收起、三种窗口模式、进程重启及 EXE 同目录数据均完成检查。系统通知的实际送达仍取决于 Windows 设置，未在其他 Windows 版本或其他电脑上验证。
 
 实际窗口验证使用 `node scripts/smoke.js`，打包后使用 `node scripts/smoke.js dist/DeskCue-0.1.0-windows-x64.exe --portable-default`。脚本在 work 中建立隔离实例，通过仅本次启动开启的本地调试端口验证新增、保存、每日确认、分类转换、取消恢复、收起窗口和三种显示模式，并重启进程确认数据与通知标记恢复。测试结束只终止脚本启动的进程，不接触真实 data。
