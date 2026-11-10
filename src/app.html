@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'"><title>案头 · DeskCue</title><link rel="stylesheet" href="app.css"></head>
+<body>
+  <header class="titlebar"><div class="brand">案头 <span>DeskCue</span></div><div class="window-actions"><button id="compact" title="收起或展开">▤</button><button id="hide" title="收进托盘，继续提醒">×</button></div></header>
+  <main><div id="error" role="alert" hidden></div><button id="summary" aria-label="展开完整面板"></button><div id="expanded">
+    <div class="toolbar"><select id="view" aria-label="事项列表"><option value="active">当前事项</option><option value="completed">已完成</option><option value="canceled">已取消</option></select><button id="add" class="primary">＋ 新增事项</button></div><div id="groups"></div>
+    </div><footer><select id="mode" aria-label="显示模式"><option value="normal">普通窗口</option><option value="desktop">桌面背景</option><option value="top">悬浮置顶</option></select><button id="data" title="打开数据与备份文件夹">本地保存</button></footer>
+  </main>
+  <dialog id="editor"><form id="task-form">
+    <div class="dialog-heading"><h1 id="editor-title">新增事项</h1><button type="button" id="dismiss" aria-label="关闭编辑">×</button></div>
+    <label>事项<input name="title" maxlength="200" required placeholder="写清楚要关注或推进的事情"></label>
+    <div class="form-row"><label>分类<select name="category"><option value="daily">每日关注</option><option value="action">本人推进</option><option value="waiting">等待外部</option></select></label><label>优先级<select name="priority"><option value="0">高</option><option value="1" selected>中</option><option value="2">低</option></select></label></div>
+    <label>下一步／备注<textarea name="description" rows="2" maxlength="4000" placeholder="下一步动作、检查要点或等待条件"></textarea></label>
+    <div id="daily-fields"><div class="form-row"><label>开始日期<input type="date" name="startDate"></label><label>最后一天<input type="date" name="endDate"></label></div><label>每天提醒时间<input type="time" name="dailyTime" value="09:00"></label></div>
+    <div id="waiting-fields" hidden><label>等待谁／什么条件<input name="waitingFor" maxlength="200"></label><label>下次跟进时间<input type="datetime-local" name="followUpAt"></label></div>
+    <div id="deadline-field"><label>最后期限（lastday，可选）<input type="date" name="dueDate"></label><label>截止时刻<input type="time" name="dueTime" value="18:00"></label></div>
+    <label>提醒方式<select name="reminderMode"><option value="off">不提醒</option><option value="relative">按截止／跟进时间提前提醒</option><option value="absolute">指定提醒时间</option></select></label>
+    <label id="lead-field" hidden>提前多久（分钟，0 为准时）<input type="number" name="leadMinutes" min="0" max="525600" step="1" value="0"></label>
+    <label id="absolute-field" hidden>提醒时间<input type="datetime-local" name="reminderAt"></label>
+    <p class="hint" id="reminder-hint">提醒开始后持续柔和闪耀，直到事项闭环。关闭通知不会停止闪耀。</p><div id="form-error" role="alert" hidden></div>
+    <div class="dialog-actions"><button type="button" id="cancel-edit">返回</button><button class="primary" type="submit">保存事项</button></div>
+  </form></dialog><script src="app.js"></script>
+</body></html>

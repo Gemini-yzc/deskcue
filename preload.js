@@ -1,21 +1,8 @@
-const { contextBridge, ipcRenderer } = require("electron");
-
-contextBridge.exposeInMainWorld("notesAPI", {
-  createNote: () => ipcRenderer.invoke("create-note"),
-  deleteNote: (id) => ipcRenderer.invoke("delete-note", id),
-  updateNote: (data) => {
-    ipcRenderer.send("update-note", data);
-  },
-  saveNoteAs: () => ipcRenderer.invoke("save-note-as"),
-  saveNote: () => ipcRenderer.invoke("save-note"),
-  openNoteFile: () => ipcRenderer.invoke("open-note-file"),
-  onInit: (callback) => {
-    ipcRenderer.on("init-note", (event, data) => callback(data));
-  },
-  openColorPicker: (data) => ipcRenderer.send("open-color-picker", data),
-  onApplyPickedColor: (cb) =>
-    ipcRenderer.on("apply-picked-color", (e, data) => cb(data)),
-
-  toggleMenu: (id) => ipcRenderer.send("menu-toggle", id),
-  closeMenu: (id) => ipcRenderer.send("menu-close", id),
+const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('deskcue', {
+  read: () => ipcRenderer.invoke('deskcue:read'),
+  command: command => ipcRenderer.invoke('deskcue:command', command),
+  onState: callback => ipcRenderer.on('deskcue:state', (_, state) => callback(state)),
+  onError: callback => ipcRenderer.on('deskcue:error', (_, error) => callback(error)),
+  onNew: callback => ipcRenderer.on('deskcue:new', callback),
 });
