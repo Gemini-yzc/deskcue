@@ -1,15 +1,22 @@
 {
   "name": "deskcue",
-  "version": "0.1.0",
-  "description": "案头：每日关注、本人推进、等待外部的 Windows 桌面事项提醒工具",
+  "version": "0.2.0",
+  "description": "DeskCue：每日关注、本人推进、等待外部的 Windows 桌面事项提醒工具",
   "main": "main.js",
   "author": "DeskCue contributors",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/Gemini-yzc/deskcue.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gemini-yzc/deskcue.git"
+  },
   "homepage": "https://github.com/Gemini-yzc/deskcue#readme",
-  "bugs": { "url": "https://github.com/Gemini-yzc/deskcue/issues" },
+  "bugs": {
+    "url": "https://github.com/Gemini-yzc/deskcue/issues"
+  },
   "private": true,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "electron .",
     "test": "node --test tests/*.test.js",
@@ -26,12 +33,39 @@
     "appId": "org.deskcue.desktop",
     "productName": "DeskCue",
     "copyright": "Copyright © 2026 DeskCue contributors; upstream © 2026 Wilkcraft",
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "asar": true,
     "electronDist": "node_modules/electron/dist",
-    "asarUnpack": ["windows-window.ps1", "windows-window.cs"],
-    "files": ["main.js", "preload.js", "src/**/*", "build/icon.*", "windows-window.ps1", "windows-window.cs", "LICENSE", "THIRD_PARTY_NOTICES.md"],
-    "win": { "icon": "build/icon.ico", "target": [{ "target": "portable", "arch": ["x64"] }], "signAndEditExecutable": false },
-    "portable": { "artifactName": "DeskCue-${version}-windows-x64.exe" }
+    "asarUnpack": [
+      "windows-window.ps1",
+      "windows-window.cs"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "build/icon.*",
+      "windows-window.ps1",
+      "windows-window.cs",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "DeskCue-${version}-windows-x64.exe"
+    }
   }
 }

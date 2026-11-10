@@ -14,7 +14,7 @@ fs.copyFileSync(exe, path.join(directory, `${name}.exe`));
 for (const file of ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'SECURITY.md', 'CONTRIBUTING.md']) fs.copyFileSync(path.join(root, file), path.join(directory, file));
 fs.mkdirSync(path.join(directory, 'docs', 'images'), { recursive: true });
 fs.copyFileSync(path.join(root, 'docs', 'images', 'panel.png'), path.join(directory, 'docs', 'images', 'panel.png'));
-fs.writeFileSync(path.join(directory, '使用说明.txt'), '案头 DeskCue\r\n\r\n解压整个压缩包到可写文件夹，双击 EXE 运行。\r\n事项和设置保存在 EXE 旁边的 data 文件夹。迁移时同时复制 EXE 和 data。\r\n关闭窗口会收进系统托盘；托盘菜单中选择退出才停止提醒。\r\n详细用法和限制见 README.md。本版本仅支持 Windows 10/11 x64。\r\n', 'utf8');
+fs.writeFileSync(path.join(directory, '使用说明.txt'), 'DeskCue\r\n\r\n解压整个压缩包到可写文件夹，双击 EXE 运行。\r\n事项和设置保存在 EXE 旁边的 data 文件夹。迁移时同时复制 EXE 和 data。\r\n关闭窗口会收进系统托盘；托盘菜单中选择退出才停止提醒。\r\n详细用法和限制见 README.md。本版本仅支持 Windows 10/11 x64。\r\n', 'utf8');
 const archive = path.join(root, 'dist', `${name}.zip`);
 const quote = value => `'${value.replace(/'/g, "''")}'`;
 execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Compress-Archive -Path ${quote(path.join(directory, '*'))} -DestinationPath ${quote(archive)} -Force`], { windowsHide: true, stdio: 'inherit' });

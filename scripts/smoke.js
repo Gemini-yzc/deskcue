@@ -21,7 +21,13 @@ const initial = [
   validateTask({ title: '完成方案中的成本测算', category: 'action', priority: 0, reminderMode: 'absolute', reminderAt: yesterday.toISOString(), dueAt: new Date(now.getTime() + 86400000).toISOString(), description: '核对人力投入与执行周期' }),
   validateTask({ title: '等待供应商返回报价', category: 'waiting', priority: 1, reminderMode: 'off', waitingFor: '供应商对接人' }),
 ];
-fs.writeFileSync(path.join(directory, 'tasks.json'), JSON.stringify({ version: 1, tasks: initial, settings: { mode: 'normal', compact: false } }));
+const crypto = require('node:crypto');
+const imageBytes = fs.readFileSync(path.join(root, 'build', 'icon.png'));
+const imageId = crypto.createHash('sha256').update(imageBytes).digest('hex');
+fs.mkdirSync(path.join(directory, 'backgrounds'), { recursive: true });
+fs.writeFileSync(path.join(directory, 'backgrounds', `${imageId}.png`), imageBytes);
+const imageFixture = { id: imageId, file: `${imageId}.png`, name: '虚构测试背景.png', addedAt: now.toISOString() };
+fs.writeFileSync(path.join(directory, 'tasks.json'), JSON.stringify({ version: 1, tasks: initial, settings: { mode: 'normal', compact: false, backgrounds: [imageFixture], backgroundId: null } }));
 const port = 19300 + Math.floor(Math.random() * 500);
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
 let child;
@@ -71,8 +77,39 @@ async function run() {
   assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".group-head")).map(el=>el.textContent.match(/每日关注|本人推进|等待外部/)[0])'), ['每日关注', '本人推进', '等待外部']);
   assert.equal(await evaluate('document.querySelectorAll(".reminding").length'), 2);
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
-  const shot = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+  assert.equal(await evaluate('document.querySelector(".brand").textContent.trim()'), 'DeskCue');
+  assert.equal(await evaluate('document.querySelector("#project").textContent.includes("GitHub")'), true);
+  const layout = await evaluate(`Array.from(document.querySelectorAll('.task')).map(row=>({height:row.getBoundingClientRect().height,mainRight:row.querySelector('.task-main').getBoundingClientRect().right,sideLeft:row.querySelector('.task-side').getBoundingClientRect().left}))`);
+  assert.ok(layout.every(row => row.height <= 36 && row.sideLeft > row.mainRight), 'Expected single-line task rows');
+  assert.equal(await evaluate('document.querySelector(".daily-help").textContent.includes("停当天提醒")'), true);
+  assert.equal(await evaluate('document.querySelectorAll("[data-action=up],[data-action=down]").length'), 0);
+  await evaluate('document.querySelector(".task-menu summary").click()');
+  assert.equal(await evaluate('document.querySelector(".task-menu").open'), true);
+  await evaluate('document.querySelector(".brand").click()');
+  assert.equal(await evaluate('document.querySelector(".task-menu").open'), false);
+  await cdp('Emulation.setDeviceMetricsOverride', { width: 360, height: 820, deviceScaleFactor: 1, mobile: false });
+  assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+  assert.equal(await evaluate('Array.from(document.querySelectorAll(".time-cell")).every(el=>el.scrollWidth<=el.clientWidth)'), true);
+  await cdp('Emulation.clearDeviceMetricsOverride');
+  await sleep(200);
+  const viewport = await evaluate('({width:innerWidth,height:Math.min(innerHeight,document.querySelector("footer").getBoundingClientRect().bottom+16)})');
+  const shot = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false, clip: { x: 0, y: 0, ...viewport, scale: 1 } });
   fs.writeFileSync(path.join(directory, 'panel.png'), Buffer.from(shot.data, 'base64'));
+
+  await evaluate('document.querySelector("#appearance").click()');
+  assert.equal(await evaluate('document.querySelector("#appearance-dialog").open'), true);
+  assert.equal(await evaluate('document.querySelectorAll("[data-theme]").length'), 8);
+  for (const theme of ['sage', 'neutral', 'blue', 'sand', 'rose', 'lavender', 'mint', 'graphite']) {
+    const result = await evaluate(`window.deskcue.command({type:'settings',theme:'${theme}'})`); assert.equal(result.ok, true);
+  }
+  await evaluate(`document.querySelector('[data-image="${imageId}"]').click()`); await sleep(150);
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#wallpaper")).backgroundImage.startsWith("url(")'), true);
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#wallpaper")).backgroundSize'), 'cover');
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#wallpaper")).backgroundPosition'), '50% 50%');
+  await evaluate('document.querySelector("#plain-background").click()'); await sleep(100);
+  assert.equal(await evaluate('getComputedStyle(document.querySelector("#wallpaper")).backgroundImage'), 'none');
+  await evaluate('document.querySelector("#appearance-close").click()');
+  await evaluate("window.deskcue.command({type:'settings',theme:'sage'})");
 
   // Exercise the actual editor form and save IPC, rather than only writing test data.
   await evaluate('document.querySelector("#add").click()');
@@ -98,6 +135,14 @@ async function run() {
   await cdp('Page.reload'); await sleep(800);
   const read = await evaluate('window.deskcue.read()');
   assert.equal(read.tasks.length, 4); assert.equal(read.dataDirectory.toLowerCase(), directory.toLowerCase());
+  const peerInput = { title: '拖拽测试同级事项', category: 'action', priority: 0, reminderMode: 'off', dueAt: null };
+  const peerResult = await evaluate(`window.deskcue.command(${JSON.stringify({type:'save',task:peerInput})})`);
+  const peer = peerResult.state.tasks.find(task => task.title === peerInput.title);
+  const action = peerResult.state.tasks.find(task => task.category === 'action' && task.id !== peer.id && task.priority === 0);
+  const moved = await evaluate(`window.deskcue.command(${JSON.stringify({type:'reorder',id:peer.id,targetId:action.id})})`);
+  assert.equal(moved.ok, true); assert.equal(moved.state.tasks.filter(t=>t.category==='action' && t.priority===0)[0].id, peer.id);
+  const auto = await evaluate("window.deskcue.command({type:'auto-sort'})");
+  assert.equal(auto.state.tasks.filter(t=>t.category==='action' && t.priority===0)[0].id, action.id);
   for (const mode of ['top', 'desktop', 'normal']) {
     const result = await evaluate(`window.deskcue.command({type:'settings',mode:'${mode}'})`);
     assert.equal(result.ok, true, result.error); assert.equal(result.state.settings.mode, mode);
@@ -106,6 +151,6 @@ async function run() {
   stop(); await sleep(800); await launch(); await sleep(600);
   const afterRestart = await evaluate('window.deskcue.read()');
   assert.deepEqual(afterRestart.tasks, beforeRestart.tasks);
-  console.log(JSON.stringify({ ok: true, executable: launchExecutable, directory, screenshot: path.join(directory, 'panel.png'), checks: ['group-order', 'continuous-reminder', 'editor-save', 'daily-closure', 'transfer', 'cancel-restore', 'compact-window', 'reload-persistence', 'three-window-modes', 'process-restart-persistence', ...(portableDefault ? ['exe-adjacent-data'] : [])] }, null, 2));
+  console.log(JSON.stringify({ ok: true, executable: launchExecutable, directory, screenshot: path.join(directory, 'panel.png'), rowHeights: layout.map(row=>row.height), checks: ['group-order', 'continuous-reminder', 'single-line-layout', 'daily-help', 'eight-palettes', 'background-gallery-cover', 'drag-order-and-reset', 'english-brand', 'more-menu', '360px-width', 'editor-save', 'daily-closure', 'transfer', 'cancel-restore', 'compact-window', 'reload-persistence', 'three-window-modes', 'process-restart-persistence', ...(portableDefault ? ['exe-adjacent-data'] : [])] }, null, 2));
 }
 run().catch(error => { console.error(error); process.exitCode = 1; }).finally(stop);

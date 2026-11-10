@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateTask, reminderState, completeTask, purgeCanceled, cancelExpiry, sortedTasks } = require('../src/domain');
+const { validateTask, reminderState, completeTask, purgeCanceled, cancelExpiry, sortedTasks, reorderTasks } = require('../src/domain');
 const local = value => new Date(value);
 const make = (patch = {}) => validateTask({ title: '测试事项', category: 'action', priority: 1, reminderMode: 'relative', dueAt: local('2026-11-09T18:00:00').toISOString(), leadMinutes: 60, ...patch }, null, local('2026-11-09T09:00:00'));
 
@@ -62,4 +62,19 @@ test('拒绝无效日期、倒置范围、无锚点提醒和非法输入', () =>
   assert.throws(() => make({ priority: 99 }), /优先级/);
   assert.throws(() => make({ title: ' ' }), /标题/);
   assert.throws(() => make({ dailyTime: '25:00' }), /时间/);
+});
+test('同级先按截止日期、无截止排最后；拖动覆盖日期顺序，重置恢复', () => {
+  const a = make({ dueAt: '2026-11-15T18:00:00Z' });
+  const b = make({ dueAt: '2026-11-11T18:00:00Z' });
+  const c = make({ dueAt: null, reminderMode: 'off' });
+  const tasks = [a, c, b];
+  assert.deepEqual(sortedTasks(tasks).map(t => t.id), [b.id, a.id, c.id]);
+  reorderTasks(tasks, a.id, b.id);
+  assert.deepEqual(sortedTasks(tasks).map(t => t.id), [a.id, b.id, c.id]);
+  const d = make({ dueAt: '2026-11-10T18:00:00Z' });
+  tasks.push(d);
+  assert.deepEqual(sortedTasks(tasks).map(t => t.id), [a.id, b.id, c.id, d.id]);
+  tasks.forEach(t => { t.manualOrder = null; });
+  assert.equal(sortedTasks(tasks)[0].id, d.id);
+  assert.throws(() => reorderTasks([...tasks, make({ priority: 0 })], a.id, 'missing'), /只能拖动/);
 });

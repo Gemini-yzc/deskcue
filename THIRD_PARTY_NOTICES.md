@@ -1,6 +1,6 @@
 # 第三方来源与许可
 
-案头（DeskCue）基于 [wilkcraft/stikly](https://github.com/wilkcraft/stikly) 二次开发，上游引入提交为 `c662faaf20d0b04e88ddf773d7f9b3425f7e58a0`，版本 1.3.2。
+DeskCue 基于 [wilkcraft/stikly](https://github.com/wilkcraft/stikly) 二次开发，上游引入提交为 `c662faaf20d0b04e88ddf773d7f9b3425f7e58a0`，版本 1.3.2。
 
 保留并使用上游的 `windows-window.cs`、`windows-window.ps1`、`build/icon.ico` 和 `build/icon.png`。原多便签编辑器和相关界面已经由本项目的事项面板替代。
 

@@ -25,6 +25,7 @@ function validateTask(input, previous = null, now = new Date()) {
   const task = {
     id: previous?.id || randomUUID(), title, category: input.category, priority: input.priority,
     order: previous?.order ?? now.getTime(), status: previous?.status || 'active',
+    manualOrder: previous?.manualOrder ?? null,
     description: text(input.description, 4000), waitingFor: text(input.waitingFor, 200),
     startDate: input.startDate || '', endDate: input.endDate || '', dailyTime: input.dailyTime || '09:00',
     dueAt: instant(input.dueAt, '最后期限'), followUpAt: instant(input.followUpAt, '跟进时间'),
@@ -74,8 +75,24 @@ function cancelExpiry(canceledAt) {
 function purgeCanceled(tasks, now = new Date()) {
   return tasks.filter(task => !(task.status === 'canceled' && task.canceledAt && now > cancelExpiry(task.canceledAt)));
 }
+function deadline(task) {
+  if (task.category === 'daily') return task.endDate ? new Date(`${task.endDate}T23:59:59`).getTime() : Infinity;
+  return task.dueAt ? Date.parse(task.dueAt) : Infinity;
+}
 function sortedTasks(tasks) {
-  return [...tasks].sort((a, b) => CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) || a.priority - b.priority || a.order - b.order || a.createdAt.localeCompare(b.createdAt));
+  return [...tasks].sort((a, b) => CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) || a.priority - b.priority ||
+    (Number.isFinite(a.manualOrder) || Number.isFinite(b.manualOrder) ? (a.manualOrder ?? Number.MAX_SAFE_INTEGER) - (b.manualOrder ?? Number.MAX_SAFE_INTEGER) : 0) ||
+    (deadline(a) === deadline(b) ? 0 : deadline(a) - deadline(b)) || a.order - b.order || a.createdAt.localeCompare(b.createdAt));
+}
+function reorderTasks(tasks, id, targetId) {
+  const task = tasks.find(item => item.id === id);
+  const target = tasks.find(item => item.id === targetId);
+  if (!task || !target || task.status !== 'active' || target.status !== 'active' || task.category !== target.category || task.priority !== target.priority) throw new Error('只能拖动同分类、同优先级的当前事项');
+  const peers = sortedTasks(tasks.filter(item => item.status === 'active' && item.category === task.category && item.priority === task.priority));
+  const from = peers.indexOf(task), to = peers.indexOf(target);
+  peers.splice(from, 1); peers.splice(to, 0, task);
+  peers.forEach((item, index) => { item.manualOrder = index; });
+  return tasks;
 }
 function completeTask(task, now = new Date()) {
   if (task.category === 'daily') {
@@ -87,4 +104,4 @@ function completeTask(task, now = new Date()) {
   task.updatedAt = now.toISOString();
   return task;
 }
-module.exports = { CATEGORIES, STATUSES, dateKey, validDate, validateTask, reminderState, cancelExpiry, purgeCanceled, sortedTasks, completeTask };
+module.exports = { CATEGORIES, STATUSES, dateKey, validDate, validateTask, reminderState, cancelExpiry, purgeCanceled, sortedTasks, completeTask, reorderTasks };

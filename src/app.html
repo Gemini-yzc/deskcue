@@ -1,11 +1,12 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'"><title>案头 · DeskCue</title><link rel="stylesheet" href="app.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'"><title>DeskCue</title><link rel="stylesheet" href="app.css"></head>
 <body>
-  <header class="titlebar"><div class="brand">案头 <span>DeskCue</span></div><div class="window-actions"><button id="compact" title="收起或展开">▤</button><button id="hide" title="收进托盘，继续提醒">×</button></div></header>
+  <div id="wallpaper" aria-hidden="true"></div>
+  <header class="titlebar"><div class="brand">DeskCue</div><div class="window-actions"><button id="project" title="用默认浏览器打开GitHub项目">GitHub ↗</button><button id="compact" title="收起或展开">▤</button><button id="hide" title="收进托盘，继续提醒">×</button></div></header>
   <main><div id="error" role="alert" hidden></div><button id="summary" aria-label="展开完整面板"></button><div id="expanded">
-    <div class="toolbar"><select id="view" aria-label="事项列表"><option value="active">当前事项</option><option value="completed">已完成</option><option value="canceled">已取消</option></select><button id="add" class="primary">＋ 新增事项</button></div><div id="groups"></div>
-    </div><footer><select id="mode" aria-label="显示模式"><option value="normal">普通窗口</option><option value="desktop">桌面背景</option><option value="top">悬浮置顶</option></select><button id="data" title="打开数据与备份文件夹">本地保存</button></footer>
+    <div class="toolbar"><select id="view" aria-label="事项列表"><option value="active">当前事项</option><option value="completed">已完成</option><option value="canceled">已取消</option></select><button id="add" class="primary">＋ 新增事项</button></div><div class="sort-bar"><span>优先级 ↓ · 截止时间 ↑</span><button id="auto-sort">恢复自动排序</button></div><div id="groups"></div>
+    </div><footer><select id="mode" aria-label="显示模式"><option value="normal">普通窗口</option><option value="desktop">桌面背景</option><option value="top">悬浮置顶</option></select><button id="appearance">配色与背景</button><button id="data" title="打开数据与备份文件夹">本地保存</button></footer>
   </main>
   <dialog id="editor"><form id="task-form">
     <div class="dialog-heading"><h1 id="editor-title">新增事项</h1><button type="button" id="dismiss" aria-label="关闭编辑">×</button></div>
@@ -20,5 +21,7 @@
     <label id="absolute-field" hidden>提醒时间<input type="datetime-local" name="reminderAt"></label>
     <p class="hint" id="reminder-hint">提醒开始后持续柔和闪耀，直到事项闭环。关闭通知不会停止闪耀。</p><div id="form-error" role="alert" hidden></div>
     <div class="dialog-actions"><button type="button" id="cancel-edit">返回</button><button class="primary" type="submit">保存事项</button></div>
-  </form></dialog><script src="app.js"></script>
+  </form></dialog>
+  <dialog id="appearance-dialog" aria-labelledby="appearance-title"><div class="dialog-heading"><h1 id="appearance-title">配色与背景</h1><button id="appearance-close" aria-label="关闭外观设置">×</button></div><div id="appearance-error" role="alert" hidden></div><div id="theme-grid"></div><div class="image-heading"><span id="image-count">自定义图片 0/3</span><button id="import-background" class="primary">选择图片</button></div><div id="image-gallery"></div><p class="hint">图片复制到 data/backgrounds，最多三张。添加第四张前提示确认，确认后删除最早副本。原始文件不动。</p><p class="hint">随窗口等比铺满、居中裁切，保留当前比例下最大的可见范围，不拉伸、不留白。支持 PNG、JPG、WebP，单张不超过30MB。</p><button id="plain-background">不使用图片背景</button></dialog>
+  <script src="appearance.js"></script><script src="app.js"></script>
 </body></html>

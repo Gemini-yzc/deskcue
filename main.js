@@ -3,7 +3,9 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
 const { Storage } = require('./src/storage');
-const { validateTask, reminderState, purgeCanceled, sortedTasks, completeTask, dateKey } = require('./src/domain');
+const { validateTask, reminderState, purgeCanceled, sortedTasks, completeTask, dateKey, reorderTasks } = require('./src/domain');
+const { Backgrounds } = require('./src/backgrounds');
+const themes = require('./src/appearance');
 
 app.setName('DeskCue');
 app.setAppUserModelId('org.deskcue.desktop');
@@ -24,11 +26,32 @@ let pendingAlertCount = -1;
 let modeQueue = Promise.resolve();
 let commandQueue = Promise.resolve();
 let maintenanceDay = '';
+let backgrounds;
+let selectedImageCache = null;
+const thumbnails = new Map();
 const notifiedThisRun = new Set();
 const iconPath = path.join(__dirname, 'build', 'icon.ico');
 
 function snapshot() {
-  return { ...state, tasks: sortedTasks(state.tasks), dataDirectory, now: new Date().toISOString(), backupWarning: store.backupError || '' };
+  const images = (state.settings.backgrounds || []).map(image => {
+    try {
+      const file = backgrounds.filePath(image.file);
+      if (!fs.existsSync(file)) return { ...image, thumbnail: '', missing: true };
+      if (!thumbnails.has(image.id)) thumbnails.set(image.id, nativeImage.createFromPath(file).resize({ width: 100, height: 60, quality: 'good' }).toDataURL());
+      return { ...image, thumbnail: thumbnails.get(image.id) };
+    } catch { return { ...image, thumbnail: '', missing: true }; }
+  });
+  let backgroundImage = '';
+  const selected = images.find(image => image.id === state.settings.backgroundId && !image.missing);
+  if (selected) {
+    if (selectedImageCache?.id !== selected.id) {
+      const type = selected.file.endsWith('.jpg') ? 'jpeg' : selected.file.split('.').pop();
+      selectedImageCache = { id: selected.id, data: `data:image/${type};base64,${fs.readFileSync(backgrounds.filePath(selected.file)).toString('base64')}` };
+    }
+    backgroundImage = selectedImageCache.data;
+  } else selectedImageCache = null;
+  for (const id of thumbnails.keys()) if (!images.some(image => image.id === id)) thumbnails.delete(id);
+  return { ...state, tasks: sortedTasks(state.tasks), images, backgroundImage, dataDirectory, now: new Date().toISOString(), backupWarning: store.backupError || '' };
 }
 function broadcast() {
   if (window && !window.isDestroyed()) window.webContents.send('deskcue:state', snapshot());
@@ -48,7 +71,7 @@ function setTrayAlert(count) {
   if (pendingAlertCount === count) return;
   pendingAlertCount = count;
   clearInterval(blinkTimer);
-  tray.setToolTip(count ? `案头 · ${count} 项待闭环` : '案头 · 每日关注 / 本人推进 / 等待外部');
+  tray.setToolTip(count ? `DeskCue · ${count} 项待闭环` : 'DeskCue · 每日关注 / 本人推进 / 等待外部');
   tray.setImage(count ? alertIcon : normalIcon);
   if (count) {
     let alternate = true;
@@ -82,7 +105,7 @@ function checkReminders() {
     });
     try { commit({ ...state, tasks: updated }); } catch (error) { report(error); }
     if (Notification.isSupported()) {
-      const notification = new Notification({ title: due.length === 1 ? '案头 · 事项提醒' : `案头 · ${due.length} 项需要关注`,
+      const notification = new Notification({ title: due.length === 1 ? 'DeskCue · 事项提醒' : `DeskCue · ${due.length} 项需要关注`,
         body: due.slice(0, 3).map(item => item.task.title).join('\n').slice(0, 500), silent: true, icon: iconPath });
       notification.on('click', showWindow);
       notification.on('failed', (_, error) => console.error('系统通知未送达：', error));
@@ -134,6 +157,10 @@ function installHandlers() {
           if (command.id) requireTask();
           if (previous && previous.status !== 'active') throw new Error('请先恢复事项再编辑');
           const saved = validateTask(command.task, previous, now);
+          if (previous && (previous.priority !== saved.priority || previous.category !== saved.category || previous.dueAt !== saved.dueAt || previous.endDate !== saved.endDate)) {
+            for (const item of next.tasks) if ((item.category === previous.category && item.priority === previous.priority) || (item.category === saved.category && item.priority === saved.priority)) item.manualOrder = null;
+            saved.manualOrder = null;
+          }
           if (previous) next.tasks[next.tasks.findIndex(item => item.id === saved.id)] = saved;
           else next.tasks.push(saved);
           break;
@@ -153,6 +180,7 @@ function installHandlers() {
         case 'transfer': {
           requireTask();
           if (task.category !== 'waiting' || task.status !== 'active') throw new Error('仅可转移正在等待的事项');
+          for (const item of next.tasks) if (item.priority === task.priority && ['waiting', 'action'].includes(item.category)) item.manualOrder = null;
           const reminder = reminderState(task, now);
           if (reminder.at) { task.reminderMode = 'absolute'; task.reminderAt = new Date(reminder.at).toISOString(); }
           task.category = 'action';
@@ -161,20 +189,36 @@ function installHandlers() {
         case 'priority':
           requireTask();
           if (![0, 1, 2].includes(command.priority)) throw new Error('优先级无效');
+          for (const item of next.tasks) if (item.category === task.category && [task.priority, command.priority].includes(item.priority)) item.manualOrder = null;
           task.priority = command.priority; break;
-        case 'move': {
+        case 'reorder': {
           requireTask();
-          const peers = sortedTasks(next.tasks.filter(item => item.status === 'active' && item.category === task.category && item.priority === task.priority));
-          const index = peers.findIndex(item => item.id === task.id);
-          const other = peers[index + (command.direction === 'up' ? -1 : 1)];
-          if (other) {
-            const otherIndex = peers.indexOf(other);
-            [peers[index], peers[otherIndex]] = [peers[otherIndex], peers[index]];
-            peers.forEach((item, order) => { item.order = order; });
-          }
+          reorderTasks(next.tasks, task.id, command.targetId);
           break;
         }
+        case 'auto-sort': for (const item of next.tasks) item.manualOrder = null; break;
+        case 'import-background': {
+          const selection = await dialog.showOpenDialog(window, { title: '选择自定义背景（最多三张）', properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
+          if (selection.canceled || !selection.filePaths[0]) return { ok: true, state: snapshot() };
+          await backgrounds.importFile(selection.filePaths[0], state.settings, {
+            decode: bytes => !nativeImage.createFromBuffer(bytes).isEmpty(),
+            confirmEviction: async oldest => {
+              const result = await dialog.showMessageBox(window, { type: 'warning', title: '自定义背景已满三张', message: '添加新图片将删除最早导入的背景', detail: `将删除 data/backgrounds 中“${oldest.name}”的副本。原始图片不会删除。`, buttons: ['删除最早图片并添加', '取消'], defaultId: 1, cancelId: 1 });
+              return result.response === 0;
+            },
+            save: settings => commit({ ...state, settings }),
+          });
+          return { ok: true, state: snapshot() };
+        }
         case 'settings': {
+          if (command.theme !== undefined) {
+            if (!Object.hasOwn(themes, command.theme)) throw new Error('配色无效');
+            next.settings.theme = command.theme;
+          }
+          if (command.backgroundId !== undefined) {
+            if (command.backgroundId !== null && !(next.settings.backgrounds || []).some(image => image.id === command.backgroundId)) throw new Error('背景图片不存在');
+            next.settings.backgroundId = command.backgroundId;
+          }
           if (typeof command.compact === 'boolean') {
             if (command.compact && !state.settings.compact) next.settings.expandedHeight = window.getSize()[1];
             next.settings.compact = command.compact;
@@ -188,6 +232,7 @@ function installHandlers() {
           break;
         }
         case 'open-data': await shell.openPath(dataDirectory); return { ok: true, state: snapshot() };
+        case 'open-project': await shell.openExternal('https://github.com/Gemini-yzc/deskcue'); return { ok: true, state: snapshot() };
         case 'hide': window.hide(); return { ok: true, state: snapshot() };
         default: throw new Error('未知操作');
       }
@@ -207,7 +252,7 @@ function createWindow() {
   const visible = bounds && screen.getAllDisplays().some(display => bounds.x < display.workArea.x + display.workArea.width && bounds.x + 100 > display.workArea.x && bounds.y < display.workArea.y + display.workArea.height && bounds.y + 100 > display.workArea.y);
   window = new BrowserWindow({ width: 430, height: Math.min(820, area.height), minWidth: 360, minHeight: 180,
     x: area.x + area.width - 450, y: area.y + 20, ...(visible ? bounds : {}),
-    title: '案头 · DeskCue', icon: iconPath, frame: false, backgroundColor: '#f8f9f5', show: false,
+    title: 'DeskCue', icon: iconPath, frame: false, backgroundColor: '#f8f9f5', show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   window.loadFile(path.join(__dirname, 'src', 'app.html'));
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -234,24 +279,26 @@ else {
   app.whenReady().then(() => {
     try {
       if (startupError) throw startupError;
-      store = new Storage(dataDirectory); state = store.load(); commit(state);
+      store = new Storage(dataDirectory); state = store.load(); backgrounds = new Backgrounds(dataDirectory);
+      state.settings.backgroundGarbage = backgrounds.cleanup(state.settings.backgroundGarbage, state.settings.backgrounds);
+      commit(state);
       normalIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
       const bitmap = Buffer.alloc(16 * 16 * 4);
       for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) if ((x - 7.5) ** 2 + (y - 7.5) ** 2 < 48) { const i = (y * 16 + x) * 4; bitmap[i] = 55; bitmap[i + 1] = 130; bitmap[i + 2] = 225; bitmap[i + 3] = 255; }
       alertIcon = nativeImage.createFromBitmap(bitmap, { width: 16, height: 16 });
       tray = new Tray(normalIcon);
       tray.setContextMenu(Menu.buildFromTemplate([
-        { label: '显示案头', click: showWindow },
+        { label: '显示 DeskCue', click: showWindow },
         { label: '新增事项', click: () => { showWindow(); window.webContents.send('deskcue:new'); } },
         { type: 'separator' }, { label: '打开数据目录', click: () => shell.openPath(dataDirectory) },
-        { label: '退出案头', click: () => { quitting = true; app.quit(); } },
+        { label: '退出 DeskCue', click: () => { quitting = true; app.quit(); } },
       ]));
       tray.on('click', showWindow); tray.on('double-click', showWindow);
       installHandlers(); createWindow(); checkReminders();
       powerMonitor.on('resume', checkReminders); powerMonitor.on('unlock-screen', checkReminders);
       app.on('activate', showWindow);
     } catch (error) {
-      dialog.showErrorBox('案头无法启动', `无法读写数据目录：${dataDirectory}\n${error.message}\n请将程序放在可写文件夹，不要直接在压缩包内运行。`);
+      dialog.showErrorBox('DeskCue 无法启动', `无法读写数据目录：${dataDirectory}\n${error.message}\n请将程序放在可写文件夹，不要直接在压缩包内运行。`);
       quitting = true; app.quit();
     }
   });

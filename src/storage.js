@@ -15,6 +15,14 @@ function parseState(raw) {
   }
   state.settings = { mode: 'normal', compact: false, ...state.settings };
   if (!['normal', 'top', 'desktop'].includes(state.settings.mode)) state.settings.mode = 'normal';
+  if (state.settings.backgrounds !== undefined) {
+    if (!Array.isArray(state.settings.backgrounds) || state.settings.backgrounds.length > 3) throw new Error('自定义图片最多三张');
+    const images = new Set();
+    for (const image of state.settings.backgrounds) {
+      if (!image || !/^[0-9a-f]{64}$/.test(image.id) || !/^[0-9a-f]{64}\.(png|jpg|webp)$/.test(image.file) || image.file.split('.')[0] !== image.id || !Number.isFinite(Date.parse(image.addedAt)) || images.has(image.id)) throw new Error('背景图片记录无效');
+      images.add(image.id);
+    }
+  }
   return state;
 }
 class Storage {
