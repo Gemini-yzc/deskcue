@@ -10,13 +10,17 @@
 
 当前版本：**0.1.0，Windows 10/11 x64 便携版**。
 
+**开箱即用：无需安装或配置开发环境，下载 EXE 后双击即可运行。**
+
+[⬇ 下载 Windows EXE](https://github.com/Gemini-yzc/deskcue/releases/download/v0.1.0/DeskCue-0.1.0-windows-x64.exe) · [⬇ 下载完整 ZIP](https://github.com/Gemini-yzc/deskcue/releases/download/v0.1.0/DeskCue-0.1.0-windows-x64.zip) · [SHA256 校验文件](https://github.com/Gemini-yzc/deskcue/releases/download/v0.1.0/SHA256SUMS.txt) · [版本说明](https://github.com/Gemini-yzc/deskcue/releases/tag/v0.1.0)
+
 1. 获取 `DeskCue-0.1.0-windows-x64.exe`，或解压对应 ZIP。
 2. 将 EXE 放进有写入权限的文件夹，双击运行。不需要安装 Node.js。
 3. 程序在 EXE 旁创建 `data` 文件夹。搬到另一台电脑时，同时复制 EXE 与整个 data。
 
 不要直接在 ZIP 内运行，不要放进只读目录。关闭窗口会收进系统托盘并继续提醒；右键托盘选择“退出案头”才结束程序。再次双击 EXE 会显示现有窗口，不重复启动。
 
-项目地址：[Gemini-yzc/deskcue](https://github.com/Gemini-yzc/deskcue)。便携 EXE 与 ZIP 位于本地 dist；正式下载可通过该仓库的 GitHub Releases 发布，本次关联仓库不代表已经上传代码或发布版本。
+项目地址：[Gemini-yzc/deskcue](https://github.com/Gemini-yzc/deskcue)。EXE、ZIP 与校验文件通过 GitHub Releases 分发；源码仓库不提交 dist 产物或个人 data。下载包不含任何预置个人事项，首次运行时才在 EXE 旁创建 data。
 
 ## 三类事项
 
