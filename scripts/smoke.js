@@ -14,12 +14,23 @@ fs.mkdirSync(directory, { recursive: true });
 const launchExecutable = portableDefault ? path.join(base, 'DeskCue.exe') : executable;
 if (portableDefault) fs.copyFileSync(executable, launchExecutable);
 const { validateTask } = require('../src/domain');
+const { DEFAULT_ZONE, wallTime, dateKey, moveDay, wallInstant, weekday } = require('../src/time-zone');
 const now = new Date();
 const yesterday = new Date(now.getTime() - 86400000);
+const today = dateKey(now, DEFAULT_ZONE);
+const twoWeeksAgo = new Date(wallInstant(`${moveDay(today, -14)}T12:00`, DEFAULT_ZONE));
+const weeklyTitle = '验证每周检查';
+const weekly = validateTask({
+  title: weeklyTitle, category: 'daily', frequency: 'weekly', weekday: weekday(today), priority: 1,
+  reminderMode: 'relative', dailyTime: '00:00',
+}, null, twoWeeksAgo, DEFAULT_ZONE);
+const weeklyRow = `.task[data-id="${weekly.id}"]`;
+const weeklyNotice = `.miss-notice[data-id="${weekly.id}"]`;
 const initial = [
   validateTask({ title: '检查上线后的异常日志', category: 'daily', priority: 0, reminderMode: 'relative', dailyTime: '00:00', description: '每日确认，次日恢复' }),
-  validateTask({ title: '完成方案中的成本测算', category: 'action', priority: 0, reminderMode: 'absolute', reminderAt: yesterday.toISOString(), dueAt: new Date(now.getTime() + 86400000).toISOString(), description: '核对人力投入与执行周期' }),
+  validateTask({ title: '完成方案中的成本测算', category: 'action', priority: 0, reminderMode: 'absolute', reminderAt: wallTime(yesterday, DEFAULT_ZONE), dueAt: wallTime(now.getTime() + 86400000, DEFAULT_ZONE), description: '核对人力投入与执行周期' }),
   validateTask({ title: '等待供应商返回报价', category: 'waiting', priority: 1, reminderMode: 'off', waitingFor: '供应商对接人' }),
+  weekly,
 ];
 const crypto = require('node:crypto');
 const imageBytes = fs.readFileSync(path.join(root, 'build', 'icon.png'));
@@ -27,7 +38,12 @@ const imageId = crypto.createHash('sha256').update(imageBytes).digest('hex');
 fs.mkdirSync(path.join(directory, 'backgrounds'), { recursive: true });
 fs.writeFileSync(path.join(directory, 'backgrounds', `${imageId}.png`), imageBytes);
 const imageFixture = { id: imageId, file: `${imageId}.png`, name: '虚构测试背景.png', addedAt: now.toISOString() };
-fs.writeFileSync(path.join(directory, 'tasks.json'), JSON.stringify({ version: 1, tasks: initial, settings: { mode: 'normal', compact: false, backgrounds: [imageFixture], backgroundId: null } }));
+fs.writeFileSync(path.join(directory, 'tasks.json'), JSON.stringify({
+  version: 2, tasks: initial, settings: {
+    mode: 'normal', compact: false, backgrounds: [imageFixture], backgroundId: null,
+    timeZone: DEFAULT_ZONE, effectiveTimeZone: DEFAULT_ZONE,
+  },
+}));
 const port = 19300 + Math.floor(Math.random() * 500);
 const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
 let child;
@@ -47,6 +63,15 @@ async function evaluate(expression) {
   const result = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
   if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
   return result.result.value;
+}
+async function checkClock(zone) {
+  const clock = await evaluate(`(() => {
+    const time = document.querySelector('#zone-clock-time');
+    return { instant: time.dateTime, text: time.textContent };
+  })()`);
+  const wall = wallTime(clock.instant, zone);
+  const date = wall.slice(0, 10).split('-').map(Number);
+  assert.equal(clock.text, `${date[0]}年${date[1]}月${date[2]}日 ${wall.slice(11, 16)}`);
 }
 async function launch() {
   const log = fs.openSync(path.join(directory, 'process.log'), 'a');
@@ -74,14 +99,18 @@ function stop() {
 async function run() {
   await launch();
   for (let tries = 0; tries < 30; tries++) { if (await evaluate('!!document.querySelector(".task")')) break; await sleep(200); }
-  assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".group-head")).map(el=>el.textContent.match(/每日关注|本人推进|等待外部/)[0])'), ['每日关注', '本人推进', '等待外部']);
-  assert.equal(await evaluate('document.querySelectorAll(".reminding").length'), 2);
+  assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".group-head")).map(el=>el.textContent.match(/定期关注|本人推进|等待外部/)[0])'), ['定期关注', '本人推进', '等待外部']);
+  assert.equal(await evaluate('document.querySelectorAll(".reminding").length'), 3);
+  assert.equal(await evaluate(`document.querySelector('${weeklyNotice} summary').textContent.includes('2 次未完成')`), true);
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   assert.equal(await evaluate('document.querySelector(".brand").textContent.trim()'), 'DeskCue');
+  await checkClock(DEFAULT_ZONE);
+  assert.equal(await evaluate(`document.querySelector('footer #time-zone').textContent === '修改时区' &&
+    document.querySelector('.zone-clock').getBoundingClientRect().bottom <= document.querySelector('#summary').getBoundingClientRect().top`), true);
   assert.equal(await evaluate('document.querySelector("#project").textContent.includes("GitHub")'), true);
   const layout = await evaluate(`Array.from(document.querySelectorAll('.task')).map(row=>({height:row.getBoundingClientRect().height,mainRight:row.querySelector('.task-main').getBoundingClientRect().right,sideLeft:row.querySelector('.task-side').getBoundingClientRect().left}))`);
   assert.ok(layout.every(row => row.height <= 36 && row.sideLeft > row.mainRight), 'Expected single-line task rows');
-  assert.equal(await evaluate('document.querySelector(".daily-help").textContent.includes("停当天提醒")'), true);
+  assert.equal(await evaluate('document.querySelector(".daily-help").textContent.includes("完成本次")'), true);
   assert.equal(await evaluate('document.querySelectorAll("[data-action=up],[data-action=down]").length'), 0);
   await evaluate('document.querySelector(".task-menu summary").click()');
   assert.equal(await evaluate('document.querySelector(".task-menu").open'), true);
@@ -116,9 +145,15 @@ async function run() {
   await evaluate(`document.querySelector('[name=title]').value='界面保存与重启验证'; document.querySelector('[name=category]').value='action'; document.querySelector('[name=category]').dispatchEvent(new Event('change')); document.querySelector('[name=reminderMode]').value='off'; document.querySelector('[name=reminderMode]').dispatchEvent(new Event('change')); document.querySelector('#task-form').requestSubmit()`);
   for (let tries = 0; tries < 30; tries++) { if (!(await evaluate('document.querySelector("#editor").open'))) break; await sleep(200); }
   assert.equal(await evaluate('document.querySelector("#editor").open'), false);
+  await evaluate('document.querySelector("#add").click()');
+  await evaluate(`document.querySelector('[name=title]').value='界面新增每周二'; document.querySelector('[name=frequency]').value='weekly'; document.querySelector('[name=frequency]').dispatchEvent(new Event('change')); document.querySelector('[name=weekday]').value='2'; document.querySelector('#task-form').requestSubmit()`);
+  for (let tries = 0; tries < 30; tries++) { if (!(await evaluate('document.querySelector("#editor").open'))) break; await sleep(200); }
+  assert.equal(await evaluate('document.querySelector("#editor").open'), false);
   let disk = JSON.parse(fs.readFileSync(path.join(directory, 'tasks.json'), 'utf8'));
   assert.equal(disk.tasks.some(task => task.title === '界面保存与重启验证'), true);
   assert.ok(disk.tasks[0].notifiedKey);
+  const newWeekly = disk.tasks.find(task => task.title === '界面新增每周二');
+  assert.equal(newWeekly.frequency, 'weekly'); assert.equal(newWeekly.weekday, 2);
   const daily = disk.tasks.find(task => task.category === 'daily');
   const waiting = disk.tasks.find(task => task.category === 'waiting');
   let result = await evaluate(`window.deskcue.command(${JSON.stringify({ type: 'complete', id: daily.id })})`);
@@ -131,10 +166,12 @@ async function run() {
   assert.equal(result.ok, true);
   result = await evaluate('window.deskcue.command({type:"settings",compact:true})'); assert.equal(result.ok, true);
   await sleep(300); assert.equal(await evaluate('innerHeight < 250'), true);
+  assert.equal(await evaluate(`document.querySelector('.zone-clock').getBoundingClientRect().height > 0 &&
+    document.querySelector('footer #time-zone').getBoundingClientRect().bottom <= innerHeight`), true);
   result = await evaluate('window.deskcue.command({type:"settings",compact:false})'); assert.equal(result.ok, true);
   await cdp('Page.reload'); await sleep(800);
   const read = await evaluate('window.deskcue.read()');
-  assert.equal(read.tasks.length, 4); assert.equal(read.dataDirectory.toLowerCase(), directory.toLowerCase());
+  assert.equal(read.tasks.length, 6); assert.equal(read.dataDirectory.toLowerCase(), directory.toLowerCase());
   const peerInput = { title: '拖拽测试同级事项', category: 'action', priority: 0, reminderMode: 'off', dueAt: null };
   const peerResult = await evaluate(`window.deskcue.command(${JSON.stringify({type:'save',task:peerInput})})`);
   const peer = peerResult.state.tasks.find(task => task.title === peerInput.title);
@@ -151,6 +188,44 @@ async function run() {
   stop(); await sleep(800); await launch(); await sleep(600);
   const afterRestart = await evaluate('window.deskcue.read()');
   assert.deepEqual(afterRestart.tasks, beforeRestart.tasks);
-  console.log(JSON.stringify({ ok: true, executable: launchExecutable, directory, screenshot: path.join(directory, 'panel.png'), rowHeights: layout.map(row=>row.height), checks: ['group-order', 'continuous-reminder', 'single-line-layout', 'daily-help', 'eight-palettes', 'background-gallery-cover', 'drag-order-and-reset', 'english-brand', 'more-menu', '360px-width', 'editor-save', 'daily-closure', 'transfer', 'cancel-restore', 'compact-window', 'reload-persistence', 'three-window-modes', 'process-restart-persistence', ...(portableDefault ? ['exe-adjacent-data'] : [])] }, null, 2));
+  assert.equal(afterRestart.tasks.find(task => task.id === weekly.id).weeklyMisses.every(miss => miss.notified), true);
+  await evaluate(`document.querySelector('${weeklyRow} .complete').click()`); await sleep(200);
+  assert.equal(await evaluate(`!!document.querySelector('${weeklyNotice}') && !document.querySelector('${weeklyRow}').classList.contains('reminding')`), true);
+  await evaluate(`document.querySelector('${weeklyNotice} button').click()`); await sleep(200);
+  assert.equal(await evaluate(`!!document.querySelector('${weeklyNotice}')`), false);
+  stop(); await sleep(800); await launch(); await sleep(600);
+  assert.equal(await evaluate(`!!document.querySelector('${weeklyNotice}')`), false);
+  const confirmed = (await evaluate('window.deskcue.read()')).tasks.find(task => task.id === weekly.id);
+  assert.equal(confirmed.weeklyMisses.length, 2);
+  assert.equal(confirmed.weeklyMisses.every(miss => miss.acknowledged), true);
+
+  const reminderAt = wallTime(Date.now() + 7200000, DEFAULT_ZONE).slice(0, 16);
+  const switchTask = { title: '时区切换测试', category: 'action', priority: 1, reminderMode: 'absolute', reminderAt };
+  result = await evaluate(`window.deskcue.command(${JSON.stringify({ type: 'save', task: switchTask })})`);
+  assert.equal(result.ok, true, result.error);
+  const switchId = result.state.tasks.find(task => task.title === switchTask.title).id;
+  assert.equal(result.state.tasks.find(task => task.id === switchId).reminding, false);
+  const sameInstant = "renderClock(new Date('2026-11-17T01:00:00Z')); document.querySelector('#zone-clock-time').textContent";
+  assert.equal(await evaluate(sameInstant), '2026年11月16日 17:00');
+  await evaluate(`document.querySelector('#time-zone').click();
+    const search = document.querySelector('#time-zone-search');
+    search.value = 'Singapore'; search.dispatchEvent(new Event('input'));
+    document.querySelector('#time-zone-form').requestSubmit()`);
+  await sleep(300);
+  const switched = await evaluate('window.deskcue.read()');
+  assert.equal(switched.settings.timeZone, 'Asia/Singapore');
+  await checkClock('Asia/Singapore');
+  assert.equal(await evaluate(sameInstant), '2026年11月17日 09:00');
+  assert.equal(switched.tasks.find(task => task.id === switchId).reminderAt, reminderAt);
+  assert.equal(switched.tasks.find(task => task.id === switchId).reminding, true);
+  assert.equal(switched.tasks.find(task => task.id === weekly.id).weeklyMisses.length, 2);
+  result = await evaluate("window.deskcue.command({type:'time-zone', timeZone:'system'})");
+  assert.equal(result.ok, true, result.error);
+  assert.equal(result.state.settings.timeZone, 'system');
+  assert.equal(result.state.settings.effectiveTimeZone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+  stop(); await sleep(800); await launch(); await sleep(600);
+  const savedZone = (await evaluate('window.deskcue.read()')).settings;
+  assert.equal(savedZone.timeZone, 'system');
+  console.log(JSON.stringify({ ok: true, executable: launchExecutable, directory, screenshot: path.join(directory, 'panel.png'), rowHeights: layout.map(row=>row.height), checks: ['group-order', 'continuous-reminder', 'single-line-layout', 'daily-help', 'eight-palettes', 'background-gallery-cover', 'drag-order-and-reset', 'english-brand', 'more-menu', '360px-width', 'editor-save', 'daily-closure', 'transfer', 'cancel-restore', 'compact-window', 'reload-persistence', 'three-window-modes', 'process-restart-persistence', 'weekly-catch-up-and-acknowledgement', 'global-time-zone-switch-and-system-follow', ...(portableDefault ? ['exe-adjacent-data'] : [])] }, null, 2));
 }
 run().catch(error => { console.error(error); process.exitCode = 1; }).finally(stop);

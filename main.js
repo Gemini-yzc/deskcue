@@ -2,8 +2,12 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dial
 const path = require('node:path');
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
-const { Storage } = require('./src/storage');
-const { validateTask, reminderState, purgeCanceled, sortedTasks, completeTask, dateKey, reorderTasks } = require('./src/domain');
+const { Storage, configureTimeZone } = require('./src/storage');
+const {
+  validateTask, reminderState, purgeCanceled, sortedTasks, completeTask, dateKey, reorderTasks,
+  isWeekly, weeklyToday, collectWeeklyMisses, acknowledgeWeeklyMisses, occurrenceDay, occurrenceDone,
+} = require('./src/domain');
+const { FOLLOW_SYSTEM, systemTimeZone, validateTimeZone, moveDay, wallInstant, taskInstant, wallTime } = require('./src/time-zone');
 const { Backgrounds } = require('./src/backgrounds');
 const themes = require('./src/appearance');
 
@@ -28,11 +32,14 @@ let commandQueue = Promise.resolve();
 let maintenanceDay = '';
 let backgrounds;
 let selectedImageCache = null;
+let systemZoneProbe;
 const thumbnails = new Map();
-const notifiedThisRun = new Set();
 const iconPath = path.join(__dirname, 'build', 'icon.ico');
 
 function snapshot() {
+  const now = new Date();
+  const zone = state.settings.effectiveTimeZone;
+  const today = dateKey(now, zone);
   const images = (state.settings.backgrounds || []).map(image => {
     try {
       const file = backgrounds.filePath(image.file);
@@ -51,18 +58,25 @@ function snapshot() {
     backgroundImage = selectedImageCache.data;
   } else selectedImageCache = null;
   for (const id of thumbnails.keys()) if (!images.some(image => image.id === id)) thumbnails.delete(id);
-  return { ...state, tasks: sortedTasks(state.tasks), images, backgroundImage, dataDirectory, now: new Date().toISOString(), backupWarning: store.backupError || '' };
+  const tasks = sortedTasks(state.tasks, zone).map(task => ({
+    ...task, reminding: reminderState(task, now, zone).active, weeklyToday: weeklyToday(task, now, zone),
+    occurrenceDone: task.category === 'daily' && occurrenceDone(task, occurrenceDay(task, now, zone)),
+    overdue: task.status === 'active' && !!task.dueAt && now.getTime() > taskInstant(task.dueAt, zone),
+  }));
+  return { ...state, tasks, images, backgroundImage, dataDirectory, today,
+    yesterday: moveDay(today, -1), backupWarning: store.backupError || '' };
 }
 function broadcast() {
   if (window && !window.isDestroyed()) window.webContents.send('deskcue:state', snapshot());
 }
-function commit(next) { state = store.save(next); broadcast(); }
+function commit(next, now) { state = store.save(next, now); broadcast(); }
 function report(error) {
   console.error(error);
   if (window && !window.isDestroyed()) window.webContents.send('deskcue:error', error.message);
 }
 function showWindow() {
   if (!window || window.isDestroyed()) return;
+  checkReminders();
   if (window.isMinimized()) window.restore();
   window.show();
   if (state.settings.mode !== 'desktop') window.focus();
@@ -71,50 +85,87 @@ function setTrayAlert(count) {
   if (pendingAlertCount === count) return;
   pendingAlertCount = count;
   clearInterval(blinkTimer);
-  tray.setToolTip(count ? `DeskCue · ${count} 项待闭环` : 'DeskCue · 每日关注 / 本人推进 / 等待外部');
+  tray.setToolTip(count ? `DeskCue · ${count} 项待确认` : 'DeskCue · 定期关注 / 本人推进 / 等待外部');
   tray.setImage(count ? alertIcon : normalIcon);
   if (count) {
     let alternate = true;
     blinkTimer = setInterval(() => { alternate = !alternate; tray.setImage(alternate ? alertIcon : normalIcon); }, 1400);
   }
 }
+function readSystemTimeZone() {
+  if (!systemZoneProbe) {
+    // A fresh runtime reads the Windows rule even if this process cached its old default.
+    systemZoneProbe = new Promise((resolve, reject) => {
+      execFile(process.execPath, ['-p', 'Intl.DateTimeFormat().resolvedOptions().timeZone'], {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, timeout: 5000,
+      }, (error, stdout) => {
+        if (error) return reject(new Error('暂时无法读取电脑时区'));
+        try { resolve(validateTimeZone(stdout.trim())); } catch (failure) { reject(failure); }
+      });
+    }).finally(() => { systemZoneProbe = null; });
+  }
+  return systemZoneProbe;
+}
+async function refreshReminders() {
+  if (!state || quitting) return;
+  if (state.settings.timeZone === FOLLOW_SYSTEM) {
+    try {
+      const zone = await readSystemTimeZone();
+      if (quitting) return;
+      if (state.settings.timeZone === FOLLOW_SYSTEM && zone !== state.settings.effectiveTimeZone) {
+        const now = new Date();
+        commit(configureTimeZone(state, FOLLOW_SYSTEM, now, zone), now);
+      }
+    } catch (error) { report(error); }
+  }
+  checkReminders();
+}
 function checkReminders() {
   clearTimeout(reminderTimer);
   if (!state || quitting) return;
   const now = new Date();
-  const clean = purgeCanceled(state.tasks, now);
-  if (clean.length !== state.tasks.length || maintenanceDay !== dateKey(now)) {
-    try { commit({ ...state, tasks: clean }); maintenanceDay = dateKey(now); } catch (error) { report(error); }
-  }
-  let nextAt = now.getTime() + 60000;
+  const zone = state.settings.effectiveTimeZone;
+  const today = dateKey(now, zone);
+  const midnight = wallInstant(`${moveDay(today, 1)}T00:00`, zone);
+  let nextAt = Math.min(now.getTime() + 60000, midnight);
   const due = [];
-  let count = 0;
-  for (const task of state.tasks) {
-    const reminder = reminderState(task, now);
-    if (reminder.active) {
-      count++;
-      const key = `${task.id}:${reminder.key}`;
-      if (task.notifiedKey !== reminder.key && !notifiedThisRun.has(key)) due.push({ task, key, reminderKey: reminder.key });
-    } else if (reminder.at && reminder.at > now.getTime()) nextAt = Math.min(nextAt, reminder.at);
+  const missed = [];
+  const updated = state.tasks.map(previous => {
+    const task = collectWeeklyMisses(previous, now, zone);
+    const reminder = reminderState(task, now, zone);
+    if (reminder.at > now.getTime()) nextAt = Math.min(nextAt, reminder.at);
+    const remind = reminder.active && task.notifiedKey !== reminder.key && !task.recentNotifiedKeys?.includes(reminder.key);
+    const misses = task.weeklyMisses?.filter(miss => !miss.acknowledged && !miss.notified) || [];
+    if (!remind && !misses.length) return task;
+    if (remind) due.push(task.title);
+    if (misses.length) missed.push(`${task.title} · ${misses.length} 次未完成`);
+    return {
+      ...task,
+      notifiedKey: remind ? reminder.key : task.notifiedKey,
+      ...(remind && task.category === 'daily' && task.notifiedKey &&
+        { recentNotifiedKeys: [...new Set([...(task.recentNotifiedKeys || []), task.notifiedKey])].slice(-3) }),
+      ...(misses.length && { weeklyMisses: task.weeklyMisses.map(miss =>
+        miss.acknowledged ? miss : { ...miss, notified: true }) }),
+    };
+  });
+  const clean = purgeCanceled(updated, now, zone);
+  let saved = true;
+  if (clean.length !== state.tasks.length || updated.some((task, index) => task !== state.tasks[index]) || maintenanceDay !== today) {
+    try { commit({ ...state, tasks: clean }, now); maintenanceDay = today; }
+    catch (error) { saved = false; report(error); }
   }
-  if (due.length) {
-    for (const item of due) notifiedThisRun.add(item.key);
-    const updated = state.tasks.map(task => {
-      const match = due.find(item => item.task.id === task.id);
-      return match ? { ...task, notifiedKey: match.reminderKey } : task;
-    });
-    try { commit({ ...state, tasks: updated }); } catch (error) { report(error); }
-    if (Notification.isSupported()) {
-      const notification = new Notification({ title: due.length === 1 ? 'DeskCue · 事项提醒' : `DeskCue · ${due.length} 项需要关注`,
-        body: due.slice(0, 3).map(item => item.task.title).join('\n').slice(0, 500), silent: true, icon: iconPath });
-      notification.on('click', showWindow);
-      notification.on('failed', (_, error) => console.error('系统通知未送达：', error));
-      notification.show();
-    }
+  if (saved && (due.length || missed.length) && Notification.isSupported()) {
+    const notification = new Notification({ title: missed.length ? 'DeskCue · 有每周事项未完成' : 'DeskCue · 事项提醒',
+      body: [...missed, ...due].slice(0, 3).join('\n').slice(0, 500), silent: true, icon: iconPath });
+    notification.on('click', showWindow);
+    notification.on('failed', (_, error) => console.error('系统通知未送达：', error));
+    notification.show();
   }
+  const count = state.tasks.filter(task => reminderState(task, now, zone).active ||
+    task.weeklyMisses?.some(miss => !miss.acknowledged)).length;
   setTrayAlert(count);
   broadcast();
-  reminderTimer = setTimeout(checkReminders, Math.max(1000, nextAt - Date.now()));
+  reminderTimer = setTimeout(refreshReminders, Math.max(1000, nextAt - Date.now()));
 }
 function applyMode(mode) {
   modeQueue = modeQueue.catch(() => {}).then(() => new Promise((resolve, reject) => {
@@ -147,8 +198,18 @@ function installHandlers() {
     try {
       assertSender(event);
       if (!command || typeof command !== 'object') throw new Error('操作无效');
+      if (command.type === 'time-zone') {
+        const setting = validateTimeZone(command.timeZone);
+        const systemZone = setting === FOLLOW_SYSTEM ? await readSystemTimeZone() : undefined;
+        const now = new Date();
+        commit(configureTimeZone(state, setting, now, systemZone), now);
+        checkReminders();
+        return { ok: true, state: snapshot() };
+      }
       const next = structuredClone(state);
       const now = new Date();
+      const zone = state.settings.effectiveTimeZone;
+      next.tasks = next.tasks.map(task => collectWeeklyMisses(task, now, zone));
       const task = next.tasks.find(item => item.id === command.id);
       const requireTask = () => { if (!task) throw new Error('事项不存在，请刷新后重试'); };
       switch (command.type) {
@@ -156,7 +217,7 @@ function installHandlers() {
           const previous = command.id ? task : null;
           if (command.id) requireTask();
           if (previous && previous.status !== 'active') throw new Error('请先恢复事项再编辑');
-          const saved = validateTask(command.task, previous, now);
+          const saved = validateTask(command.task, previous, now, zone);
           if (previous && (previous.priority !== saved.priority || previous.category !== saved.category || previous.dueAt !== saved.dueAt || previous.endDate !== saved.endDate)) {
             for (const item of next.tasks) if ((item.category === previous.category && item.priority === previous.priority) || (item.category === saved.category && item.priority === saved.priority)) item.manualOrder = null;
             saved.manualOrder = null;
@@ -171,19 +232,31 @@ function installHandlers() {
           if (task.status !== 'active') throw new Error('事项已归档');
           if (command.type === 'finish') { task.status = 'completed'; task.completedAt = now.toISOString(); }
           else {
-            if (task.category === 'daily' && task.startDate && dateKey(now) < task.startDate) throw new Error('事项尚未开始');
-            completeTask(task, now);
+            if (task.category === 'daily' && task.startDate && dateKey(now, zone) < task.startDate) throw new Error('事项尚未开始');
+            completeTask(task, now, zone);
           }
           break;
         case 'cancel': requireTask(); task.status = 'canceled'; task.canceledAt = now.toISOString(); break;
-        case 'restore': requireTask(); task.status = 'active'; task.canceledAt = null; task.completedAt = null; task.notifiedKey = ''; break;
+        case 'restore':
+          requireTask();
+          if (task.status !== 'active') {
+            if (isWeekly(task)) task.weeklySince = dateKey(now, zone);
+            task.status = 'active'; task.canceledAt = null; task.completedAt = null; task.notifiedKey = '';
+            delete task.recentNotifiedKeys;
+          }
+          break;
+        case 'acknowledge-misses':
+          requireTask();
+          acknowledgeWeeklyMisses(task, command.dates);
+          break;
         case 'transfer': {
           requireTask();
           if (task.category !== 'waiting' || task.status !== 'active') throw new Error('仅可转移正在等待的事项');
           for (const item of next.tasks) if (item.priority === task.priority && ['waiting', 'action'].includes(item.category)) item.manualOrder = null;
-          const reminder = reminderState(task, now);
-          if (reminder.at) { task.reminderMode = 'absolute'; task.reminderAt = new Date(reminder.at).toISOString(); }
+          const reminder = reminderState(task, now, zone);
+          if (reminder.at !== null) { task.reminderMode = 'absolute'; task.reminderAt = wallTime(reminder.at, zone); }
           task.category = 'action';
+          if (task.notifiedKey === reminder.key) task.notifiedKey = reminderState(task, now, zone).key;
           break;
         }
         case 'priority':
@@ -193,7 +266,7 @@ function installHandlers() {
           task.priority = command.priority; break;
         case 'reorder': {
           requireTask();
-          reorderTasks(next.tasks, task.id, command.targetId);
+          reorderTasks(next.tasks, task.id, command.targetId, zone);
           break;
         }
         case 'auto-sort': for (const item of next.tasks) item.manualOrder = null; break;
@@ -206,7 +279,9 @@ function installHandlers() {
               const result = await dialog.showMessageBox(window, { type: 'warning', title: '自定义背景已满三张', message: '添加新图片将删除最早导入的背景', detail: `将删除 data/backgrounds 中“${oldest.name}”的副本。原始图片不会删除。`, buttons: ['删除最早图片并添加', '取消'], defaultId: 1, cancelId: 1 });
               return result.response === 0;
             },
-            save: settings => commit({ ...state, settings }),
+            save: ({ backgrounds, backgroundId, backgroundGarbage }) => commit({
+              ...state, settings: { ...state.settings, backgrounds, backgroundId, backgroundGarbage },
+            }),
           });
           return { ok: true, state: snapshot() };
         }
@@ -227,6 +302,8 @@ function installHandlers() {
           if (command.mode !== undefined) {
             if (!['normal', 'top', 'desktop'].includes(command.mode)) throw new Error('显示模式无效');
             await applyMode(command.mode);
+            next.tasks = state.tasks;
+            next.settings.effectiveTimeZone = state.settings.effectiveTimeZone;
             next.settings.mode = command.mode;
           }
           break;
@@ -237,7 +314,7 @@ function installHandlers() {
         default: throw new Error('未知操作');
       }
       if (task) task.updatedAt = now.toISOString();
-      commit(next); checkReminders();
+      commit(next, now); checkReminders();
       return { ok: true, state: snapshot() };
     } catch (error) { return { ok: false, error: error.message }; }
     };
@@ -257,6 +334,7 @@ function createWindow() {
   window.loadFile(path.join(__dirname, 'src', 'app.html'));
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
+  if (process.platform === 'win32') window.hookWindowMessage(0x001e, refreshReminders);
   window.once('ready-to-show', async () => {
     window.showInactive();
     try { await applyMode(state.settings.mode); }
@@ -280,6 +358,7 @@ else {
     try {
       if (startupError) throw startupError;
       store = new Storage(dataDirectory); state = store.load(); backgrounds = new Backgrounds(dataDirectory);
+      state = configureTimeZone(state, state.settings.timeZone, new Date(), systemTimeZone());
       state.settings.backgroundGarbage = backgrounds.cleanup(state.settings.backgroundGarbage, state.settings.backgrounds);
       commit(state);
       normalIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
@@ -295,7 +374,7 @@ else {
       ]));
       tray.on('click', showWindow); tray.on('double-click', showWindow);
       installHandlers(); createWindow(); checkReminders();
-      powerMonitor.on('resume', checkReminders); powerMonitor.on('unlock-screen', checkReminders);
+      powerMonitor.on('resume', refreshReminders); powerMonitor.on('unlock-screen', refreshReminders);
       app.on('activate', showWindow);
     } catch (error) {
       dialog.showErrorBox('DeskCue 无法启动', `无法读写数据目录：${dataDirectory}\n${error.message}\n请将程序放在可写文件夹，不要直接在压缩包内运行。`);

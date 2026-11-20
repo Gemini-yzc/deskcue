@@ -7,24 +7,67 @@ let editingId = null;
 let saving = false;
 const collapsed = new Set();
 let draggingId = null;
-function dateKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
-function localValue(iso) {
-  if (!iso) return '';
-  const date = new Date(iso);
-  return `${dateKey(date)}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-function displayDate(iso) { return iso ? new Date(iso).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : ''; }
-function reminder(task) {
-  if (task.status !== 'active' || task.reminderMode === 'off') return false;
-  const now = new Date(state.now);
-  if (task.category === 'daily') {
-    let day = dateKey(now);
-    if (task.startDate && day < task.startDate) return false;
-    if (task.endDate && day > task.endDate) day = task.endDate;
-    return task.dailyDone < day && now >= new Date(`${day}T${task.dailyTime}:00`);
+const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const zoneLabels = new Map();
+let timeZones;
+let clockFormatter;
+function zoneLabel(zone) {
+  if (zone === 'system') return '跟随电脑';
+  if (zone === 'America/Los_Angeles') return '太平洋时间';
+  if (!zoneLabels.has(zone)) {
+    const label = new Intl.DateTimeFormat('zh-CN', { timeZone: zone, timeZoneName: 'longGeneric' })
+      .formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value;
+    zoneLabels.set(zone, label || zone);
   }
-  const anchor = task.reminderMode === 'absolute' ? task.reminderAt : task.category === 'waiting' ? task.followUpAt || task.dueAt : task.dueAt;
-  return !!anchor && now.getTime() >= Date.parse(anchor) - (task.reminderMode === 'relative' ? task.leadMinutes * 60000 : 0);
+  return zoneLabels.get(zone);
+}
+function displayDate(value) {
+  return value ? `${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))} ${value.slice(11, 16)}` : '';
+}
+function renderClock(now = new Date()) {
+  if (!state) return;
+  const zone = state.settings.effectiveTimeZone;
+  if (clockFormatter?.resolvedOptions().timeZone !== zone) {
+    clockFormatter = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: zone, year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    });
+  }
+  const parts = Object.fromEntries(clockFormatter.formatToParts(now).map(part => [part.type, part.value]));
+  const time = $('#zone-clock-time');
+  time.dateTime = now.toISOString();
+  time.textContent = `${parts.year}年${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+  $('#zone-clock-label').textContent = zoneLabel(zone);
+}
+function tickClock() {
+  renderClock();
+  setTimeout(tickClock, 60000 - Date.now() % 60000);
+}
+function filterTimeZones(preferred) {
+  const options = $('#time-zone-options');
+  const query = $('#time-zone-search').value.trim().toLowerCase();
+  let alias;
+  if (query.includes('/')) {
+    try { alias = new Intl.DateTimeFormat('en', { timeZone: query }).resolvedOptions().timeZone; } catch {}
+  }
+  const zones = [...new Set(['system', 'America/Los_Angeles', 'UTC', state.settings.timeZone, ...timeZones, ...(alias ? [alias] : [])])];
+  const matches = zones.filter(zone => zone === alias || `${zoneLabel(zone)} ${zone.replaceAll('_', ' ')} ${zone}`.toLowerCase().includes(query));
+  options.replaceChildren(...matches.map(zone => new Option(zone === 'system' ? zoneLabel(zone) : `${zoneLabel(zone)} · ${zone}`, zone)));
+  options.value = matches.includes(preferred) ? preferred : matches[0] || '';
+  $('#time-zone-save').disabled = !matches.length;
+}
+function pendingMisses(task) { return (task.weeklyMisses || []).filter(miss => !miss.acknowledged); }
+function missMarkup(task, datesOpen) {
+  const dates = pendingMisses(task).map(miss => miss.date);
+  if (!dates.length) return '';
+  const title = dates.length > 1 ? `${dates.length} 次未完成` :
+    dates[0] === state.yesterday ? '昨天未完成' : `${dates[0]} 未完成`;
+  return `<li class="miss-notice" data-id="${escapeText(task.id)}">
+    <details ${datesOpen.has(task.id) ? 'open' : ''}><summary>${title} · ${escapeText(task.title)}</summary>
+      <div class="miss-dates">${dates.join('、')}</div>
+    </details>
+    <button type="button" data-action="acknowledge-misses" data-dates="${dates.join(',')}">我知道了</button>
+  </li>`;
 }
 function error(message) {
   $('#error').textContent = message; $('#error').hidden = !message;
@@ -40,24 +83,26 @@ async function command(value) {
   } catch (failure) { error(failure.message); return false; }
 }
 function taskMarkup(task) {
-  const now = new Date(state.now), today = dateKey(now);
-  const dailyDone = task.category === 'daily' && task.dailyDone >= (task.endDate && today > task.endDate ? task.endDate : today);
-  const notStarted = task.category === 'daily' && task.startDate && today < task.startDate;
+  const weekly = task.category === 'daily' && task.frequency === 'weekly';
+  const dailyDone = task.occurrenceDone && (!weekly || task.weeklyToday);
+  const unavailable = weekly ? !task.weeklyToday : task.category === 'daily' && task.startDate && state.today < task.startDate;
   const active = task.status === 'active';
-  const overdue = active && task.dueAt && now > new Date(task.dueAt);
-  const label = task.category === 'daily' ? '今日已做，停止当天提醒，明天恢复' : '完成事项，停止提醒';
+  const overdue = task.overdue;
+  const label = weekly ? (unavailable ? '仅可在安排当天确认本次' : '完成本次') :
+    task.category === 'daily' ? '今日已做，停止当天提醒，明天恢复' : '完成事项，停止提醒';
+  const schedule = (weekly ? '每' + weekdays[task.weekday] : '每天') + ' ' + task.dailyTime;
   let date = '无截止';
-  if (task.category === 'daily') date = task.endDate ? task.endDate.slice(5).replace('-', '/') + ' 止' : '每天 ' + task.dailyTime;
+  if (task.category === 'daily') date = !weekly && task.endDate ? task.endDate.slice(5).replace('-', '/') + ' 止' : schedule;
   else if (task.dueAt) date = displayDate(task.dueAt);
   else if (task.category === 'waiting' && task.followUpAt) date = displayDate(task.followUpAt);
   if (dailyDone) date = '今日已完成';
   if (task.status === 'completed') date = '已完成';
   if (task.status === 'canceled') date = '已取消';
-  const details = [task.title, task.description, task.waitingFor ? '等待：' + task.waitingFor : '', task.category === 'daily' ? '每天 ' + task.dailyTime + (task.endDate ? '，至 ' + task.endDate : '') : '', task.dueAt ? '截止 ' + localValue(task.dueAt) : '', task.followUpAt ? '跟进 ' + localValue(task.followUpAt) : '', task.reminderAt ? '提醒 ' + localValue(task.reminderAt) : ''].filter(Boolean).join('\n');
+  const details = [task.title, task.description, task.waitingFor ? '等待：' + task.waitingFor : '', task.category === 'daily' ? schedule + (task.endDate ? '，至 ' + task.endDate : '') : '', task.dueAt ? '截止 ' + task.dueAt.slice(0, 16) : '', task.followUpAt ? '跟进 ' + task.followUpAt.slice(0, 16) : '', task.reminderAt ? '提醒 ' + task.reminderAt.slice(0, 16) : '', zoneLabel(state.settings.effectiveTimeZone)].filter(Boolean).join('\n');
   const actions = active ? '<button data-action="edit">编辑事项</button>' + (task.category === 'waiting' ? '<button data-action="transfer">转为本人推进</button>' : '') + (task.category === 'daily' ? '<button data-action="finish">结束整项</button>' : '') + '<button data-action="cancel">取消事项</button>' : '<button data-action="restore">恢复事项</button>';
-  return '<li class="task ' + (reminder(task) ? 'reminding ' : '') + (dailyDone ? 'done' : '') + '" data-id="' + escapeText(task.id) + '">' +
+  return '<li class="task ' + (task.reminding ? 'reminding ' : '') + (dailyDone ? 'done' : '') + '" data-id="' + escapeText(task.id) + '">' +
     '<button class="task-grip" draggable="' + active + '" aria-label="拖动同类同优先级事项排序，或按Alt加上下方向键" title="拖拽调整同优先级顺序">⠿</button>' +
-    '<button class="complete" data-action="complete" ' + (!active || dailyDone || notStarted ? 'disabled' : '') + ' title="' + label + '" aria-label="' + label + '">' + (dailyDone || !active ? '✓' : '○') + '</button>' +
+    '<button class="complete" data-action="complete" ' + (!active || dailyDone || unavailable ? 'disabled' : '') + ' title="' + label + '" aria-label="' + label + '">' + (dailyDone || !active ? '✓' : '○') + '</button>' +
     '<select class="priority p' + task.priority + '" data-action="priority" aria-label="优先级" ' + (!active ? 'disabled' : '') + '>' + ['高','中','低'].map((name,p)=>'<option value="' + p + '" ' + (task.priority === p ? 'selected' : '') + '>' + name + '</option>').join('') + '</select>' +
     '<button class="task-title task-main" data-action="edit" title="' + escapeText(details) + '" ' + (!active ? 'disabled' : '') + '>' + escapeText(task.title) + '</button>' +
     '<span class="time-cell task-side ' + (overdue ? 'overdue' : '') + '" title="' + escapeText(details) + '">' + escapeText(date) + '</span>' +
@@ -67,18 +112,26 @@ function taskMarkup(task) {
 function render() {
   if (!state) return;
   applyAppearance();
+  renderClock();
   const active = state.tasks.filter(task => task.status === 'active');
-  const total = active.filter(reminder).length;
+  const total = state.tasks.filter(task => task.reminding || pendingMisses(task).length).length;
   document.body.classList.toggle('compact', state.settings.compact);
   $('#compact').setAttribute('aria-label', state.settings.compact ? '展开面板' : '收起面板');
-  $('#summary').textContent = `每日 ${active.filter(t => t.category === 'daily').length}　·　本人 ${active.filter(t => t.category === 'action').length}　·　外部 ${active.filter(t => t.category === 'waiting').length}${total ? `　｜ ${total} 项待闭环` : ''}`;
+  $('#summary').textContent = `定期 ${active.filter(t => t.category === 'daily').length}　·　本人 ${active.filter(t => t.category === 'action').length}　·　外部 ${active.filter(t => t.category === 'waiting').length}${total ? `　｜ ${total} 项待确认` : ''}`;
   $('#summary').classList.toggle('summary-alert', total > 0);
   $('#mode').value = state.settings.mode;
+  const zone = zoneLabel(state.settings.effectiveTimeZone);
+  $('#time-zone').title = `事项时区 · ${zone}`;
+  $('#current-time-zone').textContent = `当前时区 · ${zone} · ${state.settings.effectiveTimeZone}`;
+  $('#editor-time-zone').textContent = `事项时区 · ${zone}`;
   const view = $('#view').value;
-  $('#groups').innerHTML = [['daily', '每日关注', '☀'], ['action', '本人推进', '↗'], ['waiting', '等待外部', '◷']].map(([category, title, icon]) => {
+  const datesOpen = new Set([...$('#groups').querySelectorAll('.miss-notice details[open]')].map(details => details.closest('[data-id]').dataset.id));
+  const archivedMisses = view === 'active' ? state.tasks.filter(task => task.status !== 'active').map(task => missMarkup(task, datesOpen)).join('') : '';
+  const groups = [['daily', '定期关注', '☀'], ['action', '本人推进', '↗'], ['waiting', '等待外部', '◷']].map(([category, title, icon]) => {
     const tasks = state.tasks.filter(task => task.category === category && task.status === view);
-    return `<section class="group"><button class="group-head" data-group="${category}" aria-expanded="${!collapsed.has(category)}"><span class="symbol">${icon}</span>${title}<span class="count">${tasks.length}</span>${category === 'daily' ? '<span class="daily-help">点 ○：今日已做，停当天提醒</span>' : tasks.length ? `<span class="empty">${collapsed.has(category) ? '展开' : '收起'}</span>` : '<span class="empty">暂无事项</span>'}</button><ul class="tasks" ${collapsed.has(category) ? 'hidden' : ''}>${tasks.map(task => taskMarkup(task)).join('')}</ul></section>`;
+    return `<section class="group"><button class="group-head" data-group="${category}" aria-expanded="${!collapsed.has(category)}"><span class="symbol">${icon}</span>${title}<span class="count">${tasks.length}</span>${category === 'daily' ? '<span class="daily-help">点 ○：完成本次</span>' : tasks.length ? `<span class="empty">${collapsed.has(category) ? '展开' : '收起'}</span>` : '<span class="empty">暂无事项</span>'}</button><ul class="tasks" ${collapsed.has(category) ? 'hidden' : ''}>${tasks.map(task => taskMarkup(task) + missMarkup(task, datesOpen)).join('')}</ul></section>`;
   }).join('');
+  $('#groups').innerHTML = (archivedMisses ? `<ul class="tasks">${archivedMisses}</ul>` : '') + groups;
   $('#auto-sort').disabled = !state.tasks.some(task => Number.isFinite(task.manualOrder));
   renderAppearance();
   if (state.backupWarning) error(`事项已保存，但备份未完成：${state.backupWarning}`);
@@ -101,12 +154,15 @@ function renderAppearance() {
 }
 function updateFields() {
   const daily = field('category').value === 'daily';
+  const weekly = daily && field('frequency').value === 'weekly';
   $('#daily-fields').hidden = !daily;
+  $('#weekday-field').hidden = !weekly;
+  field('weekday').required = weekly;
   $('#waiting-fields').hidden = field('category').value !== 'waiting';
   $('#deadline-field').hidden = daily;
   const mode = field('reminderMode');
   mode.options[2].disabled = daily;
-  mode.options[1].textContent = daily ? '每天按指定时间提醒' : '按截止／跟进时间提前提醒';
+  mode.options[1].textContent = daily ? (weekly ? '每周按指定时间提醒' : '每天按指定时间提醒') : '按截止／跟进时间提前提醒';
   if (daily && mode.value === 'absolute') mode.value = 'relative';
   $('#lead-field').hidden = daily || mode.value !== 'relative';
   $('#absolute-field').hidden = mode.value !== 'absolute';
@@ -114,20 +170,20 @@ function updateFields() {
 function edit(task = null) {
   editingId = task?.id || null; form.reset(); $('#form-error').hidden = true;
   $('#editor-title').textContent = task ? '编辑事项' : '新增事项';
-  for (const name of ['title', 'category', 'priority', 'description', 'waitingFor', 'startDate', 'endDate', 'dailyTime', 'reminderMode', 'leadMinutes']) if (task && task[name] !== undefined) field(name).value = task[name];
-  if (!task) { field('category').value = 'daily'; field('reminderMode').value = 'relative'; field('startDate').value = dateKey(new Date()); }
-  for (const name of ['followUpAt', 'reminderAt']) field(name).value = localValue(task?.[name]);
-  const due = localValue(task?.dueAt); field('dueDate').value = due.slice(0, 10); field('dueTime').value = due ? due.slice(11) : '18:00';
+  for (const name of ['title', 'category', 'priority', 'description', 'waitingFor', 'startDate', 'endDate', 'dailyTime', 'frequency', 'weekday', 'reminderMode', 'leadMinutes']) if (task && task[name] !== undefined) field(name).value = task[name];
+  if (!task) { field('category').value = 'daily'; field('reminderMode').value = 'relative'; field('startDate').value = state.today; }
+  for (const name of ['followUpAt', 'reminderAt']) field(name).value = task?.[name]?.slice(0, 16) || '';
+  const due = task?.dueAt || ''; field('dueDate').value = due.slice(0, 10); field('dueTime').value = due ? due.slice(11, 16) : '18:00';
   updateFields(); $('#editor').showModal(); field('title').focus();
 }
 $('#task-form').addEventListener('submit', async event => {
   event.preventDefault(); if (saving) return;
   const values = Object.fromEntries(new FormData(form)); values.priority = Number(values.priority); values.leadMinutes = Number(values.leadMinutes);
-  const iso = value => value ? new Date(value).toISOString() : null;
+  values.weekday = values.weekday === '' ? null : Number(values.weekday);
   try {
-    values.dueAt = values.category !== 'daily' && values.dueDate ? iso(`${values.dueDate}T${values.dueTime || '18:00'}`) : null;
-    values.followUpAt = values.category === 'waiting' ? iso(values.followUpAt) : null;
-    values.reminderAt = values.reminderMode === 'absolute' ? iso(values.reminderAt) : null;
+    values.dueAt = values.category !== 'daily' && values.dueDate ? `${values.dueDate}T${values.dueTime || '18:00'}` : null;
+    values.followUpAt = values.category === 'waiting' ? values.followUpAt || null : null;
+    values.reminderAt = values.reminderMode === 'absolute' ? values.reminderAt || null : null;
     if (values.category !== 'daily') { values.startDate = ''; values.endDate = ''; }
     saving = true;
     const result = await window.deskcue.command({ type: 'save', id: editingId, task: values });
@@ -143,10 +199,11 @@ $('#groups').addEventListener('click', async event => {
   const id = button.closest('[data-id]').dataset.id;
   const task = state.tasks.find(item => item.id === id); const type = button.dataset.action;
   if (type === 'edit') return edit(task);
-  if (type === 'cancel' && !confirm('取消这个事项？取消后停止提醒，保留一年，期间可以恢复。')) return;
-  if (type === 'finish' && !confirm('结束整个每日事项？之后将不再提醒。')) return;
+  if (type === 'cancel' && !confirm('取消这个事项？取消会停止后续提醒，事项保留至少一年。')) return;
+  if (type === 'finish' && !confirm('结束整个定期事项？结束后停止后续提醒。')) return;
   button.disabled = true;
-  await command({ type, id });
+  const dates = button.dataset.dates?.split(',');
+  if (!await command({ type, id, dates })) button.disabled = false;
 });
 $('#groups').addEventListener('change', event => { if (event.target.matches('select[data-action=priority]')) command({ type: 'priority', id: event.target.closest('[data-id]').dataset.id, priority: Number(event.target.value) }); });
 document.addEventListener('click', event => {
@@ -163,12 +220,42 @@ $('#hide').addEventListener('click', () => command({ type: 'hide' })); $('#data'
 $('#project').addEventListener('click', () => command({ type: 'open-project' }));
 for (const id of ['dismiss', 'cancel-edit']) $(`#${id}`).addEventListener('click', () => $('#editor').close());
 field('category').addEventListener('change', updateFields); field('reminderMode').addEventListener('change', updateFields);
+field('frequency').addEventListener('change', updateFields);
 $('#auto-sort').addEventListener('click', () => command({ type: 'auto-sort' }));
 $('#appearance').addEventListener('click', () => { error(''); $('#appearance-dialog').showModal(); });
 $('#appearance-close').addEventListener('click', () => $('#appearance-dialog').close());
 $('#theme-grid').addEventListener('click', event => { const button = event.target.closest('[data-theme]'); if (button) command({ type: 'settings', theme: button.dataset.theme }); });
 $('#image-gallery').addEventListener('click', event => { const button = event.target.closest('[data-image]'); if (button) command({ type: 'settings', backgroundId: button.dataset.image }); });
 $('#plain-background').addEventListener('click', () => command({ type: 'settings', backgroundId: null }));
+$('#time-zone').addEventListener('click', () => {
+  timeZones ||= [
+    ...Intl.supportedValuesOf('timeZone'),
+    ...Array.from({ length: 14 }, (_, index) => `Etc/GMT-${index + 1}`),
+    ...Array.from({ length: 12 }, (_, index) => `Etc/GMT+${index + 1}`),
+  ];
+  $('#time-zone-search').value = '';
+  $('#time-zone-error').hidden = true;
+  filterTimeZones(state.settings.timeZone);
+  $('#time-zone-dialog').showModal();
+  $('#time-zone-search').focus();
+});
+$('#time-zone-search').addEventListener('input', () => filterTimeZones($('#time-zone-options').value));
+$('#time-zone-close').addEventListener('click', () => $('#time-zone-dialog').close());
+$('#time-zone-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = $('#time-zone-save');
+  button.disabled = true;
+  try {
+    const result = await window.deskcue.command({ type: 'time-zone', timeZone: $('#time-zone-options').value });
+    if (!result.ok) throw new Error(result.error);
+    state = result.state;
+    render();
+    $('#time-zone-dialog').close();
+  } catch (failure) {
+    $('#time-zone-error').textContent = failure.message;
+    $('#time-zone-error').hidden = false;
+  } finally { button.disabled = !$('#time-zone-options').value; }
+});
 $('#import-background').addEventListener('click', async () => {
   $('#import-background').disabled = true;
   await command({ type: 'import-background' });
@@ -196,3 +283,5 @@ $('#groups').addEventListener('keydown', event => {
 window.deskcue.onState(value => { state = value; render(); }); window.deskcue.onError(error);
 window.deskcue.onNew(() => { if (!$('#editor').open) edit(); });
 window.deskcue.read().then(value => { state = value; render(); }).catch(failure => error(failure.message));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderClock(); });
+tickClock();

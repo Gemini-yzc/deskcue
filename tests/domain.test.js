@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { validateTask, reminderState, completeTask, purgeCanceled, cancelExpiry, sortedTasks, reorderTasks } = require('../src/domain');
+const {
+  validateTask, reminderState, completeTask, purgeCanceled, cancelExpiry, sortedTasks, reorderTasks,
+  collectWeeklyMisses, acknowledgeWeeklyMisses,
+} = require('../src/domain');
 const local = value => new Date(value);
 const make = (patch = {}) => validateTask({ title: '测试事项', category: 'action', priority: 1, reminderMode: 'relative', dueAt: local('2026-11-09T18:00:00').toISOString(), leadMinutes: 60, ...patch }, null, local('2026-11-09T09:00:00'));
 
@@ -77,4 +80,56 @@ test('同级先按截止日期、无截止排最后；拖动覆盖日期顺序�
   tasks.forEach(t => { t.manualOrder = null; });
   assert.equal(sortedTasks(tasks)[0].id, d.id);
   assert.throws(() => reorderTasks([...tasks, make({ priority: 0 })], a.id, 'missing'), /只能拖动/);
+});
+
+const weeklyInput = { title: '检查备份', category: 'daily', priority: 1, frequency: 'weekly', weekday: 2, reminderMode: 'relative' };
+const weeklyAt = (day, time = '12:00') => local(`2026-11-${day}T${time}:00`);
+
+test('每周二本地时间触发，当晚仍可完成，下周恢复', () => {
+  let task = validateTask(weeklyInput, null, weeklyAt('09'));
+  assert.throws(() => validateTask({ ...weeklyInput, weekday: null }), /提醒日/);
+  assert.equal(reminderState(task, weeklyAt('09')).active, false);
+  assert.equal(reminderState(task, weeklyAt('10', '08:59')).active, false);
+  assert.equal(reminderState(task, weeklyAt('10', '09:00')).active, true);
+  const evening = weeklyAt('10', '23:57');
+  const today = validateTask(weeklyInput, null, evening);
+  assert.equal(reminderState(today, evening).active, true);
+  completeTask(task, evening);
+  assert.equal(reminderState(task, evening).active, false);
+  assert.equal(reminderState(task, weeklyAt('11')).active, false);
+  assert.throws(() => completeTask(task, weeklyAt('11')), /安排当天/);
+  task = collectWeeklyMisses(task, weeklyAt('17'));
+  assert.deepEqual(task.weeklyMisses, []);
+  assert.equal(reminderState(task, weeklyAt('17')).active, true);
+});
+
+test('跨两个周二后补齐，新一轮完成和错过确认分别处理', () => {
+  const now = weeklyAt('24');
+  let task = validateTask(weeklyInput, null, weeklyAt('09'));
+  task = collectWeeklyMisses(task, now);
+  assert.deepEqual(task.weeklyMisses.map(miss => miss.date), ['2026-11-10', '2026-11-17']);
+  assert.equal(collectWeeklyMisses(task, now), task);
+  assert.equal(reminderState(task, now).active, true);
+  completeTask(task, now);
+  assert.equal(reminderState(task, now).active, false);
+  assert.equal(task.weeklyMisses.every(miss => !miss.acknowledged), true);
+  acknowledgeWeeklyMisses(task, ['2026-11-10']);
+  acknowledgeWeeklyMisses(task, ['2026-11-10']);
+  assert.deepEqual(task.weeklyMisses.map(miss => miss.acknowledged), [true, false]);
+  assert.throws(() => acknowledgeWeeklyMisses(task, ['invalid']), /错过日期/);
+  assert.equal(collectWeeklyMisses(task, weeklyAt('25')).weeklyMisses.length, 2);
+});
+
+test('修改和恢复计划从当日生效，起止日期包含当天，暂停期间略过', () => {
+  let task = validateTask({ ...weeklyInput, startDate: '2026-11-10' }, null, weeklyAt('09'));
+  task = collectWeeklyMisses(task, weeklyAt('11'));
+  task = validateTask({ ...task, reminderMode: 'off' }, task, weeklyAt('11'));
+  assert.equal(collectWeeklyMisses(task, weeklyAt('18')), task);
+  task = validateTask({ ...task, weekday: 5, endDate: '2026-11-20', reminderMode: 'relative' }, task, weeklyAt('18'));
+  assert.equal(reminderState(task, weeklyAt('20')).active, true);
+  task = collectWeeklyMisses(task, weeklyAt('24'));
+  assert.equal(reminderState(task, weeklyAt('24')).active, false);
+  assert.deepEqual(task.weeklyMisses.map(miss => miss.date), ['2026-11-10', '2026-11-20']);
+  const newTask = validateTask({ ...weeklyInput, startDate: '2026-11-01' }, null, weeklyAt('12'));
+  assert.equal(collectWeeklyMisses(newTask, weeklyAt('16')), newTask);
 });

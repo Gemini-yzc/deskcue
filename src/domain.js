@@ -1,21 +1,25 @@
 const { randomUUID } = require('node:crypto');
+const { dateKey, validDate, moveDay, weekday, wallValue, wallTime, wallInstant, taskInstant } = require('./time-zone');
 
 const CATEGORIES = ['daily', 'action', 'waiting'];
 const STATUSES = ['active', 'completed', 'canceled'];
-function dateKey(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-function validDate(value) {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T12:00:00`);
-  return Number.isFinite(date.getTime()) && dateKey(date) === value;
-}
 function instant(value, label) {
   if (!value) return null;
+  if (wallValue(value)) return value;
   if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) throw new Error(`${label}不是有效时间`);
   return new Date(value).toISOString();
 }
-function validateTask(input, previous = null, now = new Date()) {
+function isWeekly(task) {
+  return task?.category === 'daily' && task.frequency === 'weekly';
+}
+function weeklyToday(task, now, zone) {
+  if (!isWeekly(task) || task.status !== 'active') return false;
+  const day = dateKey(now, zone);
+  return weekday(day) === task.weekday &&
+    (!task.startDate || day >= task.startDate) && (!task.endDate || day <= task.endDate) &&
+    (!task.weeklySince || day >= task.weeklySince);
+}
+function validateTask(input, previous = null, now = new Date(), zone) {
   if (!input || typeof input !== 'object') throw new Error('事项格式无效');
   const title = String(input.title || '').trim();
   if (!title || title.length > 200) throw new Error('事项标题需为1至200个字符');
@@ -43,65 +47,128 @@ function validateTask(input, previous = null, now = new Date()) {
   if (task.category === 'daily' && task.reminderMode === 'absolute') throw new Error('每日事项使用每日时间提醒');
   if (task.category !== 'daily' && task.reminderMode === 'relative' && !(task.category === 'waiting' ? task.followUpAt || task.dueAt : task.dueAt)) throw new Error('提前提醒需要先设置截止或跟进时间');
   if (task.reminderMode === 'absolute' && !task.reminderAt) throw new Error('请选择提醒时间');
+  if (task.category === 'daily') {
+    task.frequency = input.frequency ?? 'daily';
+    if (!['daily', 'weekly'].includes(task.frequency)) throw new Error('重复频率无效');
+    if (isWeekly(task)) {
+      if (!Number.isInteger(input.weekday) || input.weekday < 0 || input.weekday > 6) throw new Error('请选择每周提醒日');
+      task.weekday = input.weekday;
+      const sameSchedule = isWeekly(previous) && ['weekday', 'dailyTime', 'startDate', 'endDate', 'reminderMode'].every(key => previous[key] === task[key]);
+      task.weeklySince = sameSchedule ? previous.weeklySince : dateKey(now, zone);
+    }
+    if (isWeekly(previous) !== isWeekly(task)) {
+      task.dailyDone = '';
+      task.notifiedKey = '';
+    }
+  }
+  if (isWeekly(task) || previous?.weeklyDone) task.weeklyDone = previous?.weeklyDone || '';
+  if (previous?.weeklyMisses) task.weeklyMisses = previous.weeklyMisses;
+  if (previous?.completionDates && isWeekly(previous) === isWeekly(task)) task.completionDates = previous.completionDates;
+  if (previous?.recentNotifiedKeys && isWeekly(previous) === isWeekly(task)) task.recentNotifiedKeys = previous.recentNotifiedKeys;
   return task;
 }
-function reminderState(task, now = new Date()) {
+function occurrenceDone(task, day) {
+  return (isWeekly(task) ? task.weeklyDone : task.dailyDone) === day || !!task.completionDates?.includes(day);
+}
+function collectWeeklyMisses(task, now, zone) {
+  if (!isWeekly(task) || task.status !== 'active' || task.reminderMode === 'off') return task;
+  const today = dateKey(now, zone);
+  const first = task.startDate > task.weeklySince ? task.startDate : task.weeklySince;
+  if (first >= today || (task.endDate && first > task.endDate)) return task;
+  const firstWeekday = weekday(first);
+  let day = moveDay(first, (task.weekday - firstWeekday + 7) % 7);
+  if (day >= today || (task.endDate && day > task.endDate)) return task;
+
+  const misses = [...(task.weeklyMisses || [])];
+  const seen = new Set(misses.map(miss => miss.date));
+  while (day < today && (!task.endDate || day <= task.endDate)) {
+    if (!occurrenceDone(task, day) && !seen.has(day) && dateKey(wallInstant(`${day}T00:00`, zone), zone) === day) {
+      misses.push({ date: day, notified: false, acknowledged: false });
+    }
+    day = moveDay(day, 7);
+  }
+  return { ...task, weeklySince: day, weeklyMisses: misses };
+}
+function acknowledgeWeeklyMisses(task, dates) {
+  if (!Array.isArray(dates) || !dates.length || !dates.every(validDate)) throw new Error('请选择要确认的错过日期');
+  const shown = new Set(dates);
+  task.weeklyMisses = (task.weeklyMisses || []).map(miss =>
+    shown.has(miss.date) ? { ...miss, acknowledged: true } : miss);
+}
+function occurrenceDay(task, now, zone) {
+  const today = dateKey(now, zone);
+  return !isWeekly(task) && task.endDate && today > task.endDate ? task.endDate : today;
+}
+function reminderState(task, now = new Date(), zone) {
   if (task.status !== 'active' || task.reminderMode === 'off') return { active: false, key: '', at: null };
   let at;
   let key;
   if (task.category === 'daily') {
-    let day = dateKey(now);
-    if (task.startDate && day < task.startDate) return { active: false, key: '', at: null };
-    if (task.endDate && day > task.endDate) day = task.endDate;
-    if (task.dailyDone >= day) return { active: false, key: '', at: null };
-    at = new Date(`${day}T${task.dailyTime}:00`).getTime();
-    key = `daily:${day}:${task.dailyTime}`;
+    const day = occurrenceDay(task, now, zone);
+    if ((task.startDate && day < task.startDate) || (isWeekly(task) && !weeklyToday(task, now, zone)) ||
+        occurrenceDone(task, day)) return { active: false, key: '', at: null };
+    at = wallInstant(`${day}T${task.dailyTime}`, zone);
+    if (dateKey(at, zone) !== day) return { active: false, key: '', at: null };
+    key = `${isWeekly(task) ? 'weekly' : 'daily'}:${day}:${task.dailyTime}`;
   } else {
     const anchor = task.reminderMode === 'absolute' ? task.reminderAt : (task.category === 'waiting' ? task.followUpAt || task.dueAt : task.dueAt);
     if (!anchor) return { active: false, key: '', at: null };
-    at = Date.parse(anchor);
-    if (task.reminderMode === 'relative') at -= task.leadMinutes * 60000;
-    key = `once:${at}`;
+    const lead = task.reminderMode === 'relative' ? task.leadMinutes : 0;
+    at = taskInstant(anchor, zone) - lead * 60000;
+    key = wallValue(anchor) ? `once:${Date.parse(`${anchor}Z`)}:${lead}` : `once:${at}`;
   }
   return { active: Number.isFinite(at) && now.getTime() >= at, key, at };
 }
-function cancelExpiry(canceledAt) {
-  const date = new Date(canceledAt);
-  const month = date.getMonth();
-  date.setFullYear(date.getFullYear() + 1);
-  if (date.getMonth() !== month) date.setDate(0);
-  return date;
+function cancelExpiry(canceledAt, zone) {
+  const date = new Date(`${wallTime(canceledAt, zone)}Z`);
+  const month = date.getUTCMonth();
+  date.setUTCFullYear(date.getUTCFullYear() + 1);
+  if (date.getUTCMonth() !== month) date.setUTCDate(0);
+  return new Date(wallInstant(date.toISOString().slice(0, -1), zone));
 }
-function purgeCanceled(tasks, now = new Date()) {
-  return tasks.filter(task => !(task.status === 'canceled' && task.canceledAt && now > cancelExpiry(task.canceledAt)));
+function purgeCanceled(tasks, now = new Date(), zone) {
+  return tasks.filter(task => !(task.status === 'canceled' && task.canceledAt &&
+    now > cancelExpiry(task.canceledAt, zone) && !task.weeklyMisses?.some(miss => !miss.acknowledged)));
 }
-function deadline(task) {
-  if (task.category === 'daily') return task.endDate ? new Date(`${task.endDate}T23:59:59`).getTime() : Infinity;
-  return task.dueAt ? Date.parse(task.dueAt) : Infinity;
+function deadline(task, zone) {
+  if (task.category === 'daily') return task.endDate ? wallInstant(`${task.endDate}T23:59:59`, zone) : Infinity;
+  return task.dueAt ? taskInstant(task.dueAt, zone) : Infinity;
 }
-function sortedTasks(tasks) {
+function sortedTasks(tasks, zone) {
+  const deadlines = new Map(tasks.map(task => [task, deadline(task, zone)]));
   return [...tasks].sort((a, b) => CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category) || a.priority - b.priority ||
     (Number.isFinite(a.manualOrder) || Number.isFinite(b.manualOrder) ? (a.manualOrder ?? Number.MAX_SAFE_INTEGER) - (b.manualOrder ?? Number.MAX_SAFE_INTEGER) : 0) ||
-    (deadline(a) === deadline(b) ? 0 : deadline(a) - deadline(b)) || a.order - b.order || a.createdAt.localeCompare(b.createdAt));
+    (deadlines.get(a) === deadlines.get(b) ? 0 : deadlines.get(a) - deadlines.get(b)) || a.order - b.order || a.createdAt.localeCompare(b.createdAt));
 }
-function reorderTasks(tasks, id, targetId) {
+function reorderTasks(tasks, id, targetId, zone) {
   const task = tasks.find(item => item.id === id);
   const target = tasks.find(item => item.id === targetId);
   if (!task || !target || task.status !== 'active' || target.status !== 'active' || task.category !== target.category || task.priority !== target.priority) throw new Error('只能拖动同分类、同优先级的当前事项');
-  const peers = sortedTasks(tasks.filter(item => item.status === 'active' && item.category === task.category && item.priority === task.priority));
+  const peers = sortedTasks(tasks.filter(item => item.status === 'active' && item.category === task.category && item.priority === task.priority), zone);
   const from = peers.indexOf(task), to = peers.indexOf(target);
   peers.splice(from, 1); peers.splice(to, 0, task);
   peers.forEach((item, index) => { item.manualOrder = index; });
   return tasks;
 }
-function completeTask(task, now = new Date()) {
-  if (task.category === 'daily') {
-    const today = dateKey(now);
+function completeTask(task, now = new Date(), zone) {
+  const previous = isWeekly(task) ? task.weeklyDone : task.dailyDone;
+  if (isWeekly(task)) {
+    if (!weeklyToday(task, now, zone)) throw new Error('只能在安排当天完成每周事项');
+    task.weeklyDone = dateKey(now, zone);
+  } else if (task.category === 'daily') {
+    const today = dateKey(now, zone);
     task.dailyDone = task.endDate && today > task.endDate ? task.endDate : today;
     if (task.endDate && today >= task.endDate) task.status = 'completed';
   } else task.status = 'completed';
+  if (task.category === 'daily' && previous) {
+    task.completionDates = [...new Set([...(task.completionDates || []), previous])].slice(-3);
+  }
   if (task.status === 'completed') task.completedAt = now.toISOString();
   task.updatedAt = now.toISOString();
   return task;
 }
-module.exports = { CATEGORIES, STATUSES, dateKey, validDate, validateTask, reminderState, cancelExpiry, purgeCanceled, sortedTasks, completeTask, reorderTasks };
+module.exports = {
+  CATEGORIES, STATUSES, dateKey, validDate, validateTask, isWeekly, weeklyToday,
+  collectWeeklyMisses, acknowledgeWeeklyMisses, reminderState, cancelExpiry, purgeCanceled,
+  sortedTasks, completeTask, reorderTasks, occurrenceDay, occurrenceDone,
+};

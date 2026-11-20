@@ -4,16 +4,26 @@
 <body>
   <div id="wallpaper" aria-hidden="true"></div>
   <header class="titlebar"><div class="brand">DeskCue</div><div class="window-actions"><button id="project" title="用默认浏览器打开GitHub项目">GitHub ↗</button><button id="compact" title="收起或展开">▤</button><button id="hide" title="收进托盘，继续提醒">×</button></div></header>
-  <main><div id="error" role="alert" hidden></div><button id="summary" aria-label="展开完整面板"></button><div id="expanded">
+  <main><div id="error" role="alert" hidden></div>
+    <div class="zone-clock"><time id="zone-clock-time"></time><span id="zone-clock-label"></span></div>
+    <button id="summary" aria-label="展开完整面板"></button><div id="expanded">
     <div class="toolbar"><select id="view" aria-label="事项列表"><option value="active">当前事项</option><option value="completed">已完成</option><option value="canceled">已取消</option></select><button id="add" class="primary">＋ 新增事项</button></div><div class="sort-bar"><span>优先级 ↓ · 截止时间 ↑</span><button id="auto-sort">恢复自动排序</button></div><div id="groups"></div>
-    </div><footer><select id="mode" aria-label="显示模式"><option value="normal">普通窗口</option><option value="desktop">桌面背景</option><option value="top">悬浮置顶</option></select><button id="appearance">配色与背景</button><button id="data" title="打开数据与备份文件夹">本地保存</button></footer>
+    </div><footer><select id="mode" aria-label="显示模式"><option value="normal">普通窗口</option><option value="desktop">桌面背景</option><option value="top">悬浮置顶</option></select><button id="appearance">配色与背景</button><button id="time-zone">修改时区</button><button id="data" title="打开数据与备份文件夹">本地保存</button></footer>
   </main>
   <dialog id="editor"><form id="task-form">
     <div class="dialog-heading"><h1 id="editor-title">新增事项</h1><button type="button" id="dismiss" aria-label="关闭编辑">×</button></div>
     <label>事项<input name="title" maxlength="200" required placeholder="写清楚要关注或推进的事情"></label>
-    <div class="form-row"><label>分类<select name="category"><option value="daily">每日关注</option><option value="action">本人推进</option><option value="waiting">等待外部</option></select></label><label>优先级<select name="priority"><option value="0">高</option><option value="1" selected>中</option><option value="2">低</option></select></label></div>
+    <p class="hint" id="editor-time-zone"></p>
+    <div class="form-row"><label>分类<select name="category"><option value="daily">定期关注</option><option value="action">本人推进</option><option value="waiting">等待外部</option></select></label><label>优先级<select name="priority"><option value="0">高</option><option value="1" selected>中</option><option value="2">低</option></select></label></div>
     <label>下一步／备注<textarea name="description" rows="2" maxlength="4000" placeholder="下一步动作、检查要点或等待条件"></textarea></label>
-    <div id="daily-fields"><div class="form-row"><label>开始日期<input type="date" name="startDate"></label><label>最后一天<input type="date" name="endDate"></label></div><label>每天提醒时间<input type="time" name="dailyTime" value="09:00"></label></div>
+    <div id="daily-fields">
+      <div class="form-row">
+        <label>重复频率<select name="frequency"><option value="daily">每天</option><option value="weekly">每周</option></select></label>
+        <label id="weekday-field" hidden>提醒日<select name="weekday"><option value="">请选择</option><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select></label>
+      </div>
+      <div class="form-row"><label>开始日期<input type="date" name="startDate"></label><label>最后一天<input type="date" name="endDate"></label></div>
+      <label>提醒时刻<input type="time" name="dailyTime" value="09:00"></label>
+    </div>
     <div id="waiting-fields" hidden><label>等待谁／什么条件<input name="waitingFor" maxlength="200"></label><label>下次跟进时间<input type="datetime-local" name="followUpAt"></label></div>
     <div id="deadline-field"><label>最后期限（lastday，可选）<input type="date" name="dueDate"></label><label>截止时刻<input type="time" name="dueTime" value="18:00"></label></div>
     <label>提醒方式<select name="reminderMode"><option value="off">不提醒</option><option value="relative">按截止／跟进时间提前提醒</option><option value="absolute">指定提醒时间</option></select></label>
@@ -21,6 +31,15 @@
     <label id="absolute-field" hidden>提醒时间<input type="datetime-local" name="reminderAt"></label>
     <p class="hint" id="reminder-hint">提醒开始后持续柔和闪耀，直到事项闭环。关闭通知不会停止闪耀。</p><div id="form-error" role="alert" hidden></div>
     <div class="dialog-actions"><button type="button" id="cancel-edit">返回</button><button class="primary" type="submit">保存事项</button></div>
+  </form></dialog>
+  <dialog id="time-zone-dialog" aria-labelledby="time-zone-title"><form id="time-zone-form">
+    <div class="dialog-heading"><h1 id="time-zone-title">事项时区</h1><button type="button" id="time-zone-close" aria-label="关闭时区设置">×</button></div>
+    <p id="current-time-zone" class="hint"></p>
+    <label>搜索时区<input id="time-zone-search" type="search" placeholder="输入城市或时区名称"></label>
+    <label>选择时区<select id="time-zone-options" size="7" required></select></label>
+    <p class="hint">切换后按新时区重新计算所有事项，保留原来填写的日期和钟点。</p>
+    <div id="time-zone-error" role="alert" hidden></div>
+    <div class="dialog-actions"><button type="submit" class="primary" id="time-zone-save">应用时区</button></div>
   </form></dialog>
   <dialog id="appearance-dialog" aria-labelledby="appearance-title"><div class="dialog-heading"><h1 id="appearance-title">配色与背景</h1><button id="appearance-close" aria-label="关闭外观设置">×</button></div><div id="appearance-error" role="alert" hidden></div><div id="theme-grid"></div><div class="image-heading"><span id="image-count">自定义图片 0/3</span><button id="import-background" class="primary">选择图片</button></div><div id="image-gallery"></div><p class="hint">图片复制到 data/backgrounds，最多三张。添加第四张前提示确认，确认后删除最早副本。原始文件不动。</p><p class="hint">随窗口等比铺满、居中裁切，保留当前比例下最大的可见范围，不拉伸、不留白。支持 PNG、JPG、WebP，单张不超过30MB。</p><button id="plain-background">不使用图片背景</button></dialog>
   <script src="appearance.js"></script><script src="app.js"></script>

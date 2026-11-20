@@ -1,7 +1,7 @@
 {
   "name": "deskcue",
   "version": "0.2.0",
-  "description": "DeskCue：每日关注、本人推进、等待外部的 Windows 桌面事项提醒工具",
+  "description": "DeskCue：定期关注、本人推进、等待外部的 Windows 桌面事项提醒工具",
   "main": "main.js",
   "author": "DeskCue contributors",
   "license": "MIT",
@@ -37,6 +37,10 @@
       "output": "dist"
     },
     "asar": true,
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "electronDist": "node_modules/electron/dist",
     "asarUnpack": [
       "windows-window.ps1",
