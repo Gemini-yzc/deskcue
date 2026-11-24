@@ -8,11 +8,11 @@
 
 ## 下载与运行
 
-GitHub Releases 已发布 **0.2.0，Windows 10/11 x64 便携版**。下文的每周提醒、事项时区和顶部时钟属于源码中的未发布功能。体验这些功能可按「开发」一节在本地运行或构建。
+**0.3.0，Windows 10/11 x64 便携版**，新增每周提醒、全局事项时区和面板时钟。
 
 **开箱即用：无需安装或配置开发环境，下载 EXE 后双击即可运行。**
 
-[⬇ 下载 Windows EXE](https://github.com/Gemini-yzc/deskcue/releases/download/v0.2.0/DeskCue-0.2.0-windows-x64.exe) · [⬇ 下载完整 ZIP](https://github.com/Gemini-yzc/deskcue/releases/download/v0.2.0/DeskCue-0.2.0-windows-x64.zip) · [SHA256 校验文件](https://github.com/Gemini-yzc/deskcue/releases/download/v0.2.0/SHA256SUMS.txt) · [版本说明](https://github.com/Gemini-yzc/deskcue/releases/tag/v0.2.0)
+[下载 Windows EXE](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.0/DeskCue-0.3.0-windows-x64.exe) · [下载完整 ZIP](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.0/DeskCue-0.3.0-windows-x64.zip) · [SHA256 校验文件](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.0/SHA256SUMS.txt) · [版本说明](docs/releases/v0.3.0.md)
 
 1. 获取对应版本的 `DeskCue-版本号-windows-x64.exe`，或解压对应 ZIP。
 2. 将 EXE 放进有写入权限的文件夹，双击运行。不需要安装 Node.js。
@@ -81,7 +81,7 @@ GitHub Releases 已发布 **0.2.0，Windows 10/11 x64 便携版**。下文的每
 ## 数据与备份
 
 ```text
-DeskCue-0.2.0-windows-x64.exe
+DeskCue-0.3.0-windows-x64.exe
 data/
   tasks.json          事项、顺序、日期、提醒标记与窗口设置
   backups/            按天保存的 JSON 备份，保留最近七个日历日
@@ -138,7 +138,7 @@ docs/SPEC.md             已确认的功能规格
 
 正式发布使用单独的手动工作流 **Publish verified Windows release**：填入本仓库成功的 Windows CI run ID 和版本标签（如 v0.1.0）。工作流复用该次构建的附件，验证 SHA256、ZIP 文件白名单及内嵌 EXE 一致性后上传 Release；只发布 EXE、ZIP 和校验文件，不上传 data、备份或缓存。已公开的 Release 不会被该流程覆盖，日常推送也不会自动发布。
 
-实际窗口验证使用 `node scripts/smoke.js`，打包后使用 `node scripts/smoke.js dist/DeskCue-0.2.0-windows-x64.exe --portable-default`。脚本在 `work/` 中使用虚构事项，覆盖新增和保存、每日确认、每周错过补查、时钟跨日切换、收起窗口、三种显示模式和重启恢复。
+实际窗口验证使用 `node scripts/smoke.js`，打包后使用 `node scripts/smoke.js dist/DeskCue-0.3.0-windows-x64.exe --portable-default`。脚本在 `work/` 中使用虚构事项，覆盖新增和保存、每日确认、每周错过补查、时钟跨日切换、收起窗口、三种显示模式和重启恢复。
 
 ## macOS 与已知限制
 
@@ -151,7 +151,7 @@ docs/SPEC.md             已确认的功能规格
 
 ## 版本与来源
 
-### 未发布
+### 0.3.0
 
 - 定期关注支持每周指定一天，错过后补查并保留提示，直至用户确认。
 - 新增全局事项时区和面板时钟，支持切换地区、跟随电脑以及离线处理夏令时。
