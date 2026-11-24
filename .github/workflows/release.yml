@@ -11,6 +11,10 @@ on:
         description: Release tag, for example v0.1.0
         required: true
         type: string
+      draft_release_id:
+        description: Existing draft release ID when resuming publication
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -24,6 +28,7 @@ jobs:
       REPO: ${{ github.repository }}
       BUILD_RUN_ID: ${{ inputs.build_run_id }}
       TAG_NAME: ${{ inputs.tag_name }}
+      DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
     steps:
       - name: Validate build and release inputs
         shell: bash
@@ -31,6 +36,7 @@ jobs:
           set -euo pipefail
           [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
           [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ -z "$DRAFT_RELEASE_ID" || "$DRAFT_RELEASE_ID" =~ ^[0-9]+$ ]]
           gh api "repos/$REPO/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/build.json"
           jq -e --arg repo "$REPO" '.conclusion == "success" and .head_repository.full_name == $repo and .name == "Windows checks and package"' "$RUNNER_TEMP/build.json"
           echo "BUILD_SHA=$(jq -r .head_sha "$RUNNER_TEMP/build.json")" >> "$GITHUB_ENV"
@@ -68,17 +74,37 @@ jobs:
         working-directory: release-files
         run: |
           set -euo pipefail
-          RELEASE_ID=$(gh api "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG_NAME\") | .id" | head -n 1)
-          if [ -z "$RELEASE_ID" ]; then
-            gh release create "$TAG_NAME" --repo "$REPO" --target "$BUILD_SHA" --draft --title "DeskCue $TAG_NAME · Windows Portable" --notes "Windows x64 portable release. Download the EXE and double-click to run. No data directory, personal tasks, backups, or runtime cache is included."
-            RELEASE_ID=$(gh api "repos/$REPO/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG_NAME\") | .id" | head -n 1)
+          RELEASES="repos/$REPO/releases"
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          gh api "repos/$REPO/contents/docs/releases/$TAG_NAME.md?ref=$BUILD_SHA" --jq '.content' | base64 -d > "$NOTES"
+          test -s "$NOTES"
+          if [ -n "$DRAFT_RELEASE_ID" ]; then
+            gh api "$RELEASES/$DRAFT_RELEASE_ID" > "$RUNNER_TEMP/release.json"
+          else
+            gh api --method POST "$RELEASES" -f tag_name="$TAG_NAME" -f target_commitish="$BUILD_SHA" \
+              -f name="DeskCue $TAG_NAME · Windows Portable" -F draft=true -F "body=@$NOTES" > "$RUNNER_TEMP/release.json"
           fi
-          gh api "repos/$REPO/releases/$RELEASE_ID" > "$RUNNER_TEMP/release.json"
-          jq -e '.draft == true' "$RUNNER_TEMP/release.json"
-          [[ "$(jq -r .target_commitish "$RUNNER_TEMP/release.json")" == "$BUILD_SHA" ]]
-          while read -r ASSET_ID; do
-            [ -z "$ASSET_ID" ] || gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"
-          done < <(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --jq '.[] | select(.state == "starter") | .id')
-          gh release upload "$TAG_NAME" "DeskCue-${TAG_NAME#v}-windows-x64.exe" "DeskCue-${TAG_NAME#v}-windows-x64.zip" SHA256SUMS.txt --repo "$REPO" --clobber
-          gh release edit "$TAG_NAME" --repo "$REPO" --draft=false --latest
-          gh release view "$TAG_NAME" --repo "$REPO" --json url,assets
+          jq -e --arg tag "$TAG_NAME" --arg sha "$BUILD_SHA" \
+            '.draft and .tag_name == $tag and .target_commitish == $sha' "$RUNNER_TEMP/release.json"
+          RELEASE_ID=$(jq -er '.id' "$RUNNER_TEMP/release.json")
+          UPLOAD_URL=$(jq -er '.upload_url | split("{")[0]' "$RUNNER_TEMP/release.json")
+          [[ "$UPLOAD_URL" == "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets" ]]
+          ASSETS="$RUNNER_TEMP/release-assets.json"
+          gh api "$RELEASES/$RELEASE_ID/assets" > "$ASSETS"
+          for FILE in "DeskCue-${TAG_NAME#v}-windows-x64.exe" "DeskCue-${TAG_NAME#v}-windows-x64.zip" SHA256SUMS.txt; do
+            DIGEST="sha256:$(sha256sum "$FILE" | cut -d' ' -f1)"
+            BYTES=$(wc -c < "$FILE" | tr -d ' ')
+            if jq -e --arg name "$FILE" '.[] | select(.name == $name)' "$ASSETS" > /dev/null; then
+              jq -e --arg name "$FILE" --arg digest "$DIGEST" --argjson bytes "$BYTES" \
+                '.[] | select(.name == $name and .state == "uploaded" and .size == $bytes and .digest == $digest)' "$ASSETS" > /dev/null
+            else
+              curl --fail-with-body --silent --show-error \
+                -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/octet-stream" \
+                --data-binary "@$FILE" "$UPLOAD_URL?name=$FILE" |
+                jq -e --arg name "$FILE" --argjson bytes "$BYTES" '.name == $name and .state == "uploaded" and .size == $bytes'
+            fi
+          done
+          gh api "$RELEASES/$RELEASE_ID/assets" --jq 'map(select(.state == "uploaded") | .name) | sort' > "$ASSETS"
+          jq -e --arg exe "DeskCue-${TAG_NAME#v}-windows-x64.exe" --arg zip "DeskCue-${TAG_NAME#v}-windows-x64.zip" \
+            '. == ([$exe, $zip, "SHA256SUMS.txt"] | sort)' "$ASSETS"
+          gh api --method PATCH "$RELEASES/$RELEASE_ID" -F draft=false -f make_latest=true -F "body=@$NOTES" --jq '.html_url'
