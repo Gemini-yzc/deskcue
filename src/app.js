@@ -158,6 +158,9 @@ function updateFields() {
   $('#daily-fields').hidden = !daily;
   $('#weekday-field').hidden = !weekly;
   field('weekday').required = weekly;
+  const hasEndDate = daily && !$('#no-end-date').checked;
+  field('endDate').disabled = !hasEndDate;
+  field('endDate').required = hasEndDate;
   $('#waiting-fields').hidden = field('category').value !== 'waiting';
   $('#deadline-field').hidden = daily;
   const mode = field('reminderMode');
@@ -171,6 +174,7 @@ function edit(task = null) {
   editingId = task?.id || null; form.reset(); $('#form-error').hidden = true;
   $('#editor-title').textContent = task ? '编辑事项' : '新增事项';
   for (const name of ['title', 'category', 'priority', 'description', 'waitingFor', 'startDate', 'endDate', 'dailyTime', 'frequency', 'weekday', 'reminderMode', 'leadMinutes']) if (task && task[name] !== undefined) field(name).value = task[name];
+  $('#no-end-date').checked = !task?.endDate;
   if (!task) { field('category').value = 'daily'; field('reminderMode').value = 'relative'; field('startDate').value = state.today; }
   for (const name of ['followUpAt', 'reminderAt']) field(name).value = task?.[name]?.slice(0, 16) || '';
   const due = task?.dueAt || ''; field('dueDate').value = due.slice(0, 10); field('dueTime').value = due ? due.slice(11, 16) : '18:00';
@@ -184,7 +188,8 @@ $('#task-form').addEventListener('submit', async event => {
     values.dueAt = values.category !== 'daily' && values.dueDate ? `${values.dueDate}T${values.dueTime || '18:00'}` : null;
     values.followUpAt = values.category === 'waiting' ? values.followUpAt || null : null;
     values.reminderAt = values.reminderMode === 'absolute' ? values.reminderAt || null : null;
-    if (values.category !== 'daily') { values.startDate = ''; values.endDate = ''; }
+    if (values.category !== 'daily') values.startDate = '';
+    values.endDate = values.endDate || '';
     saving = true;
     const result = await window.deskcue.command({ type: 'save', id: editingId, task: values });
     if (!result.ok) throw new Error(result.error);
@@ -221,6 +226,7 @@ $('#project').addEventListener('click', () => command({ type: 'open-project' }))
 for (const id of ['dismiss', 'cancel-edit']) $(`#${id}`).addEventListener('click', () => $('#editor').close());
 field('category').addEventListener('change', updateFields); field('reminderMode').addEventListener('change', updateFields);
 field('frequency').addEventListener('change', updateFields);
+$('#no-end-date').addEventListener('change', updateFields);
 $('#auto-sort').addEventListener('click', () => command({ type: 'auto-sort' }));
 $('#appearance').addEventListener('click', () => { error(''); $('#appearance-dialog').showModal(); });
 $('#appearance-close').addEventListener('click', () => $('#appearance-dialog').close());

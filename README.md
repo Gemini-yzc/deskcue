@@ -8,11 +8,11 @@
 
 ## 下载与运行
 
-**0.3.0，Windows 10/11 x64 便携版**，新增每周提醒、全局事项时区和面板时钟。
+**0.3.1，Windows 10/11 x64 便携版**。「定期关注」可以直接选择「无结束日期」。
 
 **开箱即用：无需安装或配置开发环境，下载 EXE 后双击即可运行。**
 
-[下载 Windows EXE](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.0/DeskCue-0.3.0-windows-x64.exe) · [下载完整 ZIP](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.0/DeskCue-0.3.0-windows-x64.zip) · [SHA256 校验文件](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.0/SHA256SUMS.txt) · [版本说明](docs/releases/v0.3.0.md)
+[下载 Windows EXE](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.1/DeskCue-0.3.1-windows-x64.exe) · [下载完整 ZIP](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.1/DeskCue-0.3.1-windows-x64.zip) · [SHA256 校验文件](https://github.com/Gemini-yzc/deskcue/releases/download/v0.3.1/SHA256SUMS.txt) · [版本说明](docs/releases/v0.3.1.md)
 
 1. 获取对应版本的 `DeskCue-版本号-windows-x64.exe`，或解压对应 ZIP。
 2. 将 EXE 放进有写入权限的文件夹，双击运行。不需要安装 Node.js。
@@ -44,7 +44,7 @@
 
 ## 提醒规则
 
-- 添加「定期关注 → 每周 → 周二 → 09:00」，即可在每周二 09:00 提醒。起止日期都包含当天，结束日期留空会持续重复。当天新建且已过设定时刻时会立即提醒。当晚启动仍可确认本次，跨过午夜后记为错过。
+- 添加「定期关注 → 每周 → 周二 → 09:00」，即可在每周二 09:00 提醒。新建时默认勾选「无结束日期」，事项会按设定频率持续重复，想停止时可点「结束整项」。需要设定结束日期时，取消勾选并填写「最后一天」。起止日期都包含当天。当天新建且已过设定时刻时会立即提醒。当晚启动仍可确认本次，跨过午夜后记为错过。
 - 运行中跨日或下次启动时补查每周事项。跨过多个安排日时，面板会在同一事项下列出所有未确认的错过日期，并将本次发现的错过合并发一次系统通知。「我知道了」只清除当前提示所列日期，仍保留未完成记录。重启或下一轮提醒都不会清除旧提示。
 - 调整计划只改变之后的安排。关闭提醒期间不产生错过，重新开启后按计划继续。结束或取消会停止后续提醒，已产生的错过提示继续保留到确认。
 - 定期事项使用设置的事项时区，也可关闭提醒。本人推进和等待外部可选择不提醒、相对期限提前若干分钟或直接指定提醒时刻。
@@ -81,7 +81,7 @@
 ## 数据与备份
 
 ```text
-DeskCue-0.3.0-windows-x64.exe
+DeskCue-0.3.1-windows-x64.exe
 data/
   tasks.json          事项、顺序、日期、提醒标记与窗口设置
   backups/            按天保存的 JSON 备份，保留最近七个日历日
@@ -98,6 +98,17 @@ data/
 点击“本地保存”可打开数据文件夹。手动恢复时先从托盘退出程序，备份整个 data，再把选定备份复制为 tasks.json。恢复后仍会按当前时间清除超过一年的取消事项。
 
 DeskCue 使用独立的数据目录，不自动覆盖或导入原版 `%APPDATA%\stikly` 便签。当前没有云同步、加密或原版便签导入功能。
+
+### 更新便携版或迁移到新目录
+
+如果新版 EXE 放在原来的文件夹，只需从系统托盘退出旧版，再替换 EXE。新版会直接读取同目录的 `data/`。
+
+如果新版 EXE 放在另一个文件夹，按以下步骤迁移：
+
+1. 从系统托盘退出正在运行的 DeskCue，避免复制期间数据发生变化。
+2. 如果新版目录里已有 `data/`，先把它改名为 `data-before-migration/` 或另选一个未使用的备份名称。
+3. 把旧版的 `data/` 复制到新版 EXE 旁边，保留原目录。带上 `tasks.json`、`backups/` 和 `backgrounds/`。可以跳过 `runtime/`，新版启动时会重新创建。
+4. 从新版目录启动 DeskCue，确认事项、设置和自定义背景都已带过来。若要恢复新版目录原有的数据，先退出 DeskCue，将迁入的 `data/` 改名留存，再把第 2 步的备份改回 `data/`。
 
 ## 开发
 
@@ -138,7 +149,7 @@ docs/SPEC.md             已确认的功能规格
 
 正式发布使用手动工作流 **Publish verified Windows release**。填入已通过的 Windows CI run ID 和版本标签，并在对应构建提交中提供 `docs/releases/<标签>.md`。如果续发已有草稿，另填其 Release ID。工作流先检查 SHA256、ZIP 文件白名单和包内 EXE，再按草稿 ID 上传 EXE、ZIP 和校验文件。续发时会核对草稿对应的标签、提交及已有附件的校验值。
 
-实际窗口验证使用 `node scripts/smoke.js`，打包后使用 `node scripts/smoke.js dist/DeskCue-0.3.0-windows-x64.exe --portable-default`。脚本在 `work/` 中使用虚构事项，覆盖新增和保存、每日确认、每周错过补查、时钟跨日切换、收起窗口、三种显示模式和重启恢复。
+实际窗口验证使用 `node scripts/smoke.js`，打包后使用 `node scripts/smoke.js dist/DeskCue-0.3.1-windows-x64.exe --portable-default`。脚本在 `work/` 中使用虚构事项，覆盖新增和保存、每日确认、每周错过补查、时钟跨日切换、收起窗口、三种显示模式和重启恢复。
 
 ## macOS 与已知限制
 
@@ -150,6 +161,11 @@ docs/SPEC.md             已确认的功能规格
 - 单个面板包含全部事项，避免为每条事项创建独立浏览器窗口；具体内存与CPU占用取决于运行环境，不承诺未经测量的数值。
 
 ## 版本与来源
+
+### 0.3.1
+
+- 「定期关注」新增「无结束日期」选项，新建时默认勾选。已有事项按保存的日期回显，可直接改为持续重复。
+- 补充便携版在原目录升级、跨目录迁移和恢复迁移前备份的步骤。
 
 ### 0.3.0
 

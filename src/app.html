@@ -21,7 +21,13 @@
         <label>重复频率<select name="frequency"><option value="daily">每天</option><option value="weekly">每周</option></select></label>
         <label id="weekday-field" hidden>提醒日<select name="weekday"><option value="">请选择</option><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select></label>
       </div>
-      <div class="form-row"><label>开始日期<input type="date" name="startDate"></label><label>最后一天<input type="date" name="endDate"></label></div>
+      <div class="form-row">
+        <label>开始日期<input type="date" name="startDate"></label>
+        <div>
+          <label>最后一天<input type="date" name="endDate" disabled></label>
+          <label class="checkbox-label"><input type="checkbox" id="no-end-date" checked>无结束日期</label>
+        </div>
+      </div>
       <label>提醒时刻<input type="time" name="dailyTime" value="09:00"></label>
     </div>
     <div id="waiting-fields" hidden><label>等待谁／什么条件<input name="waitingFor" maxlength="200"></label><label>下次跟进时间<input type="datetime-local" name="followUpAt"></label></div>
