@@ -2,10 +2,12 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dial
 const path = require('node:path');
 const fs = require('node:fs');
 const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { createAutoStart } = require('./src/auto-start');
 const { Storage, configureTimeZone } = require('./src/storage');
 const {
   validateTask, reminderState, purgeCanceled, sortedTasks, completeTask, dateKey, reorderTasks,
-  isWeekly, weeklyToday, collectWeeklyMisses, acknowledgeWeeklyMisses, occurrenceDay, occurrenceDone,
+  isWeekly, weeklyToday, collectWeeklyMisses, canAnnounceWeeklyMisses, acknowledgeWeeklyMisses, occurrenceDay, occurrenceDone,
 } = require('./src/domain');
 const { FOLLOW_SYSTEM, systemTimeZone, validateTimeZone, moveDay, wallInstant, taskInstant, wallTime } = require('./src/time-zone');
 const { Backgrounds } = require('./src/backgrounds');
@@ -14,6 +16,7 @@ const themes = require('./src/appearance');
 app.setName('DeskCue');
 app.setAppUserModelId('org.deskcue.desktop');
 const dataArgument = process.argv.find(value => value.startsWith('--data-dir='));
+const portableExecutable = process.env.PORTABLE_EXECUTABLE_FILE;
 const baseDirectory = app.isPackaged ? process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(app.getPath('exe')) : __dirname;
 const dataDirectory = dataArgument ? path.resolve(dataArgument.slice(11)) : path.join(baseDirectory, 'data');
 let startupError;
@@ -60,6 +63,7 @@ function snapshot() {
   for (const id of thumbnails.keys()) if (!images.some(image => image.id === id)) thumbnails.delete(id);
   const tasks = sortedTasks(state.tasks, zone).map(task => ({
     ...task, reminding: reminderState(task, now, zone).active, weeklyToday: weeklyToday(task, now, zone),
+    missAlert: hasWeeklyMissAlert(task, now, zone),
     occurrenceDone: task.category === 'daily' && occurrenceDone(task, occurrenceDay(task, now, zone)),
     overdue: task.status === 'active' && !!task.dueAt && now.getTime() > taskInstant(task.dueAt, zone),
   }));
@@ -70,6 +74,50 @@ function broadcast() {
   if (window && !window.isDestroyed()) window.webContents.send('deskcue:state', snapshot());
 }
 function commit(next, now) { state = store.save(next, now); broadcast(); }
+
+function updateTrayMenu(autoStart) {
+  const items = [
+    { label: '显示 DeskCue', click: showWindow },
+    { label: '新增事项', click: () => { showWindow(); window.webContents.send('deskcue:new'); } },
+    { type: 'separator' }, { label: '打开数据目录', click: () => shell.openPath(dataDirectory) },
+  ];
+  if (autoStart) {
+    let checked = false;
+    try { checked = autoStart.isEnabled(); } catch { /* Show the error if the user attempts a change. */ }
+    items.push({ label: '开机自启动', type: 'checkbox', checked, click: item => {
+      try {
+        autoStart.setEnabled(item.checked);
+      } catch (error) {
+        dialog.showErrorBox('无法设置开机自启动', error.message);
+      }
+      updateTrayMenu(autoStart);
+    } });
+  }
+  items.push({ label: '退出 DeskCue', click: () => { quitting = true; app.quit(); } });
+  tray.setContextMenu(Menu.buildFromTemplate(items));
+}
+
+async function configureAutoStart() {
+  if (process.platform !== 'win32' || !app.isPackaged || !path.isAbsolute(portableExecutable || '') ||
+      dataArgument || process.argv.includes('--no-auto-start')) return;
+  try {
+    const { stdout } = await promisify(execFile)('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)',
+    ], { windowsHide: true, timeout: 10000 });
+    if (quitting) return;
+    const startupDirectory = stdout.trim();
+    if (!path.isAbsolute(startupDirectory)) throw new Error('找不到当前账户的启动文件夹');
+    const autoStart = createAutoStart({ startupDirectory, appData: app.getPath('appData'), executable: portableExecutable, shell });
+    try {
+      autoStart.initialize();
+    } finally {
+      updateTrayMenu(autoStart);
+    }
+  } catch (error) {
+    if (!quitting) dialog.showErrorBox('无法设置开机自启动', error.message);
+  }
+}
 function report(error) {
   console.error(error);
   if (window && !window.isDestroyed()) window.webContents.send('deskcue:error', error.message);
@@ -120,6 +168,9 @@ async function refreshReminders() {
   }
   checkReminders();
 }
+function hasWeeklyMissAlert(task, now, zone) {
+  return Boolean(task.weeklyMisses?.some(miss => !miss.acknowledged)) && canAnnounceWeeklyMisses(task, now, zone);
+}
 function checkReminders() {
   clearTimeout(reminderTimer);
   if (!state || quitting) return;
@@ -135,7 +186,8 @@ function checkReminders() {
     const reminder = reminderState(task, now, zone);
     if (reminder.at > now.getTime()) nextAt = Math.min(nextAt, reminder.at);
     const remind = reminder.active && task.notifiedKey !== reminder.key && !task.recentNotifiedKeys?.includes(reminder.key);
-    const misses = task.weeklyMisses?.filter(miss => !miss.acknowledged && !miss.notified) || [];
+    const misses = task.weeklyMisses && canAnnounceWeeklyMisses(task, now, zone) ?
+      task.weeklyMisses.filter(miss => !miss.acknowledged && !miss.notified) : [];
     if (!remind && !misses.length) return task;
     if (remind) due.push(task.title);
     if (misses.length) missed.push(`${task.title} · ${misses.length} 次未完成`);
@@ -161,8 +213,7 @@ function checkReminders() {
     notification.on('failed', (_, error) => console.error('系统通知未送达：', error));
     notification.show();
   }
-  const count = state.tasks.filter(task => reminderState(task, now, zone).active ||
-    task.weeklyMisses?.some(miss => !miss.acknowledged)).length;
+  const count = state.tasks.filter(task => reminderState(task, now, zone).active || hasWeeklyMissAlert(task, now, zone)).length;
   setTrayAlert(count);
   broadcast();
   reminderTimer = setTimeout(refreshReminders, Math.max(1000, nextAt - Date.now()));
@@ -366,14 +417,10 @@ else {
       for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) if ((x - 7.5) ** 2 + (y - 7.5) ** 2 < 48) { const i = (y * 16 + x) * 4; bitmap[i] = 55; bitmap[i + 1] = 130; bitmap[i + 2] = 225; bitmap[i + 3] = 255; }
       alertIcon = nativeImage.createFromBitmap(bitmap, { width: 16, height: 16 });
       tray = new Tray(normalIcon);
-      tray.setContextMenu(Menu.buildFromTemplate([
-        { label: '显示 DeskCue', click: showWindow },
-        { label: '新增事项', click: () => { showWindow(); window.webContents.send('deskcue:new'); } },
-        { type: 'separator' }, { label: '打开数据目录', click: () => shell.openPath(dataDirectory) },
-        { label: '退出 DeskCue', click: () => { quitting = true; app.quit(); } },
-      ]));
+      updateTrayMenu();
       tray.on('click', showWindow); tray.on('double-click', showWindow);
       installHandlers(); createWindow(); checkReminders();
+      void configureAutoStart();
       powerMonitor.on('resume', refreshReminders); powerMonitor.on('unlock-screen', refreshReminders);
       app.on('activate', showWindow);
     } catch (error) {

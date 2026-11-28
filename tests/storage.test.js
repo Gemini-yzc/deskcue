@@ -66,6 +66,26 @@ test('待确认的错过记录跨重启保留，取消满一年后仍可确认�
   assert.deepEqual(new Storage(store.directory).load().tasks, []);
 });
 
+test('旧版单日和新版多日排期可一起读写并恢复', t => {
+  const store = setup(t);
+  const state = store.load();
+  const now = new Date('2026-11-09T20:00:00Z');
+  const weeklyInput = { title: '检查备份', category: 'daily', frequency: 'weekly', weekday: 2, priority: 1, reminderMode: 'relative' };
+  const legacy = validateTask(weeklyInput, null, now, DEFAULT_ZONE);
+  assert.equal(legacy.weekdays, undefined);
+  state.tasks.push(legacy);
+  fs.writeFileSync(store.file, JSON.stringify(state));
+  const upgraded = store.load();
+  assert.deepEqual(upgraded.tasks, [legacy]);
+
+  const workdays = validateTask({ ...weeklyInput, weekdays: [1, 2, 3, 4, 5] }, null, now, DEFAULT_ZONE);
+  upgraded.tasks.push(workdays);
+  store.save(upgraded, now);
+  const reopened = new Storage(store.directory).load();
+  assert.deepEqual(reopened.tasks, [legacy, workdays]);
+  assert.deepEqual(reopened.tasks[1].weekdays, [1, 2, 3, 4, 5]);
+});
+
 test('旧版东八区数据升级为太平洋时间，保留钟点、通知标记和已有错过', t => {
   const store = setup(t);
   const now = new Date('2026-11-17T18:00:00Z');

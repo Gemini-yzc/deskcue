@@ -112,6 +112,12 @@ label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; margin
 .form-row label { min-width: 0; }
 .checkbox-label { flex-direction: row; align-items: center; }
 .checkbox-label input { width: auto; margin: 0; }
+#weekday-field { min-width: 0; border: 0; margin: 0 0 12px; padding: 0; }
+#weekday-field legend { font-size: 12px; margin-bottom: 5px; padding: 0; }
+.weekday-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(58px, 1fr)); gap: 6px; }
+.weekday-options label { margin: 0; padding: 3px 5px; white-space: nowrap; cursor: pointer; }
+.weekday-options input { accent-color: var(--accent); cursor: pointer; }
+#weekday-error { color: var(--urgent); font-size: 12px; margin: 5px 0 0; }
 .hint { font-size: 11px; color: var(--muted); }
 #time-zone-options { width: 100%; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }

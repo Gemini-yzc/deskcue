@@ -19,8 +19,20 @@
     <div id="daily-fields">
       <div class="form-row">
         <label>重复频率<select name="frequency"><option value="daily">每天</option><option value="weekly">每周</option></select></label>
-        <label id="weekday-field" hidden>提醒日<select name="weekday"><option value="">请选择</option><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select></label>
       </div>
+      <fieldset id="weekday-field" hidden disabled>
+        <legend>提醒日</legend>
+        <div class="weekday-options">
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="1">周一</label>
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="2">周二</label>
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="3">周三</label>
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="4">周四</label>
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="5">周五</label>
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="6">周六</label>
+          <label class="checkbox-label"><input type="checkbox" name="weekdays" value="0">周日</label>
+        </div>
+        <p id="weekday-error" role="alert" hidden>请选择至少一个每周提醒日</p>
+      </fieldset>
       <div class="form-row">
         <label>开始日期<input type="date" name="startDate"></label>
         <div>

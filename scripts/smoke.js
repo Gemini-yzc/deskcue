@@ -75,7 +75,7 @@ async function checkClock(zone) {
 }
 async function launch() {
   const log = fs.openSync(path.join(directory, 'process.log'), 'a');
-  const args = [...(!packaged ? [root] : []), ...(!portableDefault ? [`--data-dir=${directory}`] : []), `--remote-debugging-port=${port}`];
+  const args = [...(!packaged ? [root] : []), ...(!portableDefault ? [`--data-dir=${directory}`] : []), '--no-auto-start', `--remote-debugging-port=${port}`];
   child = spawn(launchExecutable, args, { env, windowsHide: true, stdio: ['ignore', log, log] });
   fs.closeSync(log);
   let target;
@@ -90,15 +90,26 @@ async function launch() {
     const message = JSON.parse(event.data); const request = requests.get(message.id);
     if (request) { requests.delete(message.id); message.error ? request.reject(new Error(message.error.message)) : request.resolve(message.result); }
   });
+  for (let tries = 0; tries < 50; tries++) {
+    if (await evaluate('!!document.querySelector(".task")')) return;
+    await sleep(200);
+  }
+  assert.fail(`Application did not render the test tasks. Logs: ${directory}`);
 }
 function stop() {
   if (ws) { ws.close(); ws = null; }
   if (child?.pid) { try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
   child = null;
 }
+async function waitForEditorSave() {
+  for (let tries = 0; tries < 30; tries++) {
+    if (!(await evaluate('document.querySelector("#editor").open'))) return;
+    await sleep(200);
+  }
+  assert.fail('Task editor did not close after saving');
+}
 async function run() {
   await launch();
-  for (let tries = 0; tries < 30; tries++) { if (await evaluate('!!document.querySelector(".task")')) break; await sleep(200); }
   assert.deepEqual(await evaluate('Array.from(document.querySelectorAll(".group-head")).map(el=>el.textContent.match(/定期关注|本人推进|等待外部/)[0])'), ['定期关注', '本人推进', '等待外部']);
   assert.equal(await evaluate('document.querySelectorAll(".reminding").length'), 3);
   assert.equal(await evaluate(`document.querySelector('${weeklyNotice} summary').textContent.includes('2 次未完成')`), true);
@@ -143,17 +154,28 @@ async function run() {
   // Exercise the actual editor form and save IPC, rather than only writing test data.
   await evaluate('document.querySelector("#add").click()');
   await evaluate(`document.querySelector('[name=title]').value='界面保存与重启验证'; document.querySelector('[name=category]').value='action'; document.querySelector('[name=category]').dispatchEvent(new Event('change')); document.querySelector('[name=reminderMode]').value='off'; document.querySelector('[name=reminderMode]').dispatchEvent(new Event('change')); document.querySelector('#task-form').requestSubmit()`);
-  for (let tries = 0; tries < 30; tries++) { if (!(await evaluate('document.querySelector("#editor").open'))) break; await sleep(200); }
-  assert.equal(await evaluate('document.querySelector("#editor").open'), false);
+  await waitForEditorSave();
   await evaluate('document.querySelector("#add").click()');
-  await evaluate(`document.querySelector('[name=title]').value='界面新增每周二'; document.querySelector('[name=frequency]').value='weekly'; document.querySelector('[name=frequency]').dispatchEvent(new Event('change')); document.querySelector('[name=weekday]').value='2'; document.querySelector('#task-form').requestSubmit()`);
-  for (let tries = 0; tries < 30; tries++) { if (!(await evaluate('document.querySelector("#editor").open'))) break; await sleep(200); }
-  assert.equal(await evaluate('document.querySelector("#editor").open'), false);
+  const weeklyOptions = '#weekday-field input[name="weekdays"]';
+  const checkedWeekdays = `Array.from(document.querySelectorAll('${weeklyOptions}:checked'), input => Number(input.value))`;
+  await evaluate(`document.querySelector('[name=title]').value='界面新增工作日提醒';
+    const frequency = document.querySelector('[name=frequency]');
+    frequency.value='weekly'; frequency.dispatchEvent(new Event('change'));
+    document.querySelector('#task-form').requestSubmit()`);
+  assert.equal(await evaluate('document.querySelector("#editor").open && !document.querySelector("#weekday-error").hidden'), true);
+  assert.equal(await evaluate(`document.querySelectorAll('${weeklyOptions}').length`), 7);
+  await evaluate(`for (const input of document.querySelectorAll('${weeklyOptions}')) {
+    if (Number(input.value) >= 1 && Number(input.value) <= 5) input.click();
+  } document.querySelector('#task-form').requestSubmit()`);
+  await waitForEditorSave();
   let disk = JSON.parse(fs.readFileSync(path.join(directory, 'tasks.json'), 'utf8'));
   assert.equal(disk.tasks.some(task => task.title === '界面保存与重启验证'), true);
   assert.ok(disk.tasks[0].notifiedKey);
-  const newWeekly = disk.tasks.find(task => task.title === '界面新增每周二');
-  assert.equal(newWeekly.frequency, 'weekly'); assert.equal(newWeekly.weekday, 2);
+  const newWeekly = disk.tasks.find(task => task.title === '界面新增工作日提醒');
+  assert.equal(newWeekly.frequency, 'weekly');
+  assert.deepEqual(newWeekly.weekdays, [1, 2, 3, 4, 5]);
+  const multiRow = `.task[data-id="${newWeekly.id}"]`;
+  assert.match(await evaluate(`document.querySelector('${multiRow} .time-cell').textContent`), /周一至周五 09:00/);
   const daily = disk.tasks.find(task => task.category === 'daily');
   const waiting = disk.tasks.find(task => task.category === 'waiting');
   let result = await evaluate(`window.deskcue.command(${JSON.stringify({ type: 'complete', id: daily.id })})`);
@@ -185,16 +207,28 @@ async function run() {
     assert.equal(result.ok, true, result.error); assert.equal(result.state.settings.mode, mode);
   }
   const beforeRestart = await evaluate('window.deskcue.read()');
-  stop(); await sleep(800); await launch(); await sleep(600);
+  stop(); await sleep(800); await launch();
   const afterRestart = await evaluate('window.deskcue.read()');
   assert.deepEqual(afterRestart.tasks, beforeRestart.tasks);
   assert.equal(afterRestart.tasks.find(task => task.id === weekly.id).weeklyMisses.every(miss => miss.notified), true);
+  await evaluate(`document.querySelector('${weeklyRow} .task-title').click()`);
+  assert.deepEqual(await evaluate(checkedWeekdays), [weekday(today)]);
+  await evaluate('document.querySelector("#cancel-edit").click()');
+  await evaluate(`document.querySelector('${multiRow} .task-title').click()`);
+  assert.deepEqual(await evaluate(checkedWeekdays), [1, 2, 3, 4, 5]);
+  await evaluate(`for (const input of document.querySelectorAll('${weeklyOptions}')) {
+    if ([0, 2, 4].includes(Number(input.value))) input.click();
+  } document.querySelector('#task-form').requestSubmit()`);
+  await waitForEditorSave();
   await evaluate(`document.querySelector('${weeklyRow} .complete').click()`); await sleep(200);
   assert.equal(await evaluate(`!!document.querySelector('${weeklyNotice}') && !document.querySelector('${weeklyRow}').classList.contains('reminding')`), true);
   await evaluate(`document.querySelector('${weeklyNotice} button').click()`); await sleep(200);
   assert.equal(await evaluate(`!!document.querySelector('${weeklyNotice}')`), false);
-  stop(); await sleep(800); await launch(); await sleep(600);
+  stop(); await sleep(800); await launch();
   assert.equal(await evaluate(`!!document.querySelector('${weeklyNotice}')`), false);
+  await evaluate(`document.querySelector('${multiRow} .task-title').click()`);
+  assert.deepEqual(await evaluate(checkedWeekdays), [1, 3, 5, 0]);
+  await evaluate('document.querySelector("#cancel-edit").click()');
   const confirmed = (await evaluate('window.deskcue.read()')).tasks.find(task => task.id === weekly.id);
   assert.equal(confirmed.weeklyMisses.length, 2);
   assert.equal(confirmed.weeklyMisses.every(miss => miss.acknowledged), true);
@@ -226,6 +260,6 @@ async function run() {
   stop(); await sleep(800); await launch(); await sleep(600);
   const savedZone = (await evaluate('window.deskcue.read()')).settings;
   assert.equal(savedZone.timeZone, 'system');
-  console.log(JSON.stringify({ ok: true, executable: launchExecutable, directory, screenshot: path.join(directory, 'panel.png'), rowHeights: layout.map(row=>row.height), checks: ['group-order', 'continuous-reminder', 'single-line-layout', 'daily-help', 'eight-palettes', 'background-gallery-cover', 'drag-order-and-reset', 'english-brand', 'more-menu', '360px-width', 'editor-save', 'daily-closure', 'transfer', 'cancel-restore', 'compact-window', 'reload-persistence', 'three-window-modes', 'process-restart-persistence', 'weekly-catch-up-and-acknowledgement', 'global-time-zone-switch-and-system-follow', ...(portableDefault ? ['exe-adjacent-data'] : [])] }, null, 2));
+  console.log(JSON.stringify({ ok: true, executable: launchExecutable, directory, screenshot: path.join(directory, 'panel.png'), rowHeights: layout.map(row=>row.height), checks: ['group-order', 'continuous-reminder', 'single-line-layout', 'daily-help', 'eight-palettes', 'background-gallery-cover', 'drag-order-and-reset', 'english-brand', 'more-menu', '360px-width', 'editor-save', 'daily-closure', 'transfer', 'cancel-restore', 'compact-window', 'reload-persistence', 'three-window-modes', 'process-restart-persistence', 'weekly-catch-up-and-acknowledgement', 'weekly-day-selection-and-edit', 'global-time-zone-switch-and-system-follow', ...(portableDefault ? ['exe-adjacent-data'] : [])] }, null, 2));
 }
 run().catch(error => { console.error(error); process.exitCode = 1; }).finally(stop);

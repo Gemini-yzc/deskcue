@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   validateTask, reminderState, completeTask, purgeCanceled, cancelExpiry, sortedTasks, reorderTasks,
-  collectWeeklyMisses, acknowledgeWeeklyMisses,
+  collectWeeklyMisses, acknowledgeWeeklyMisses, canAnnounceWeeklyMisses,
 } = require('../src/domain');
 const local = value => new Date(value);
 const make = (patch = {}) => validateTask({ title: '测试事项', category: 'action', priority: 1, reminderMode: 'relative', dueAt: local('2026-11-09T18:00:00').toISOString(), leadMinutes: 60, ...patch }, null, local('2026-11-09T09:00:00'));
@@ -132,4 +132,69 @@ test('修改和恢复计划从当日生效，起止日期包含当天，暂停�
   assert.deepEqual(task.weeklyMisses.map(miss => miss.date), ['2026-11-10', '2026-11-20']);
   const newTask = validateTask({ ...weeklyInput, startDate: '2026-11-01' }, null, weeklyAt('12'));
   assert.equal(collectWeeklyMisses(newTask, weeklyAt('16')), newTask);
+});
+
+test('工作日各自提醒和完成，补查时跳过周末', () => {
+  let task = validateTask({ ...weeklyInput, weekdays: [1, 2, 3, 4, 5] }, null, weeklyAt('09'));
+  const monday = reminderState(task, weeklyAt('09'));
+  assert.equal(monday.active, true);
+  completeTask(task, weeklyAt('09'));
+  assert.equal(reminderState(task, weeklyAt('09')).active, false);
+  const tuesday = reminderState(task, weeklyAt('10'));
+  assert.equal(tuesday.active, true);
+  assert.notEqual(tuesday.key, monday.key);
+  completeTask(task, weeklyAt('10'));
+  assert.equal(reminderState(task, weeklyAt('10')).active, false);
+  for (const day of ['14', '15']) {
+    assert.equal(reminderState(task, weeklyAt(day)).active, false);
+    assert.throws(() => completeTask(task, weeklyAt(day)), /安排当天/);
+  }
+
+  task = collectWeeklyMisses(task, weeklyAt('14'));
+  assert.deepEqual(task.weeklyMisses.map(miss => miss.date), ['2026-11-11', '2026-11-12', '2026-11-13']);
+  assert.equal(canAnnounceWeeklyMisses(task, weeklyAt('14')), false);
+  assert.equal(canAnnounceWeeklyMisses(task, weeklyAt('15')), false);
+  assert.equal(collectWeeklyMisses(task, weeklyAt('16')), task);
+  assert.equal(canAnnounceWeeklyMisses(task, weeklyAt('16')), true);
+  assert.equal(reminderState(task, weeklyAt('16')).active, true);
+});
+
+test('多选支持周日和日期边界，星期按事项时区判断', () => {
+  const zone = 'America/Los_Angeles';
+  const created = new Date('2026-11-12T20:00:00Z');
+  const task = validateTask({ ...weeklyInput, weekdays: [0, 5], startDate: '2026-11-13', endDate: '2026-11-15' }, null, created, zone);
+  assert.deepEqual(task.weekdays, [5, 0]);
+  assert.equal(reminderState(task, created, zone).active, false);
+  const fridayInZone = new Date('2026-11-14T01:00:00Z');
+  const saturdayInZone = new Date('2026-11-14T20:00:00Z');
+  assert.equal(reminderState(task, fridayInZone, zone).active, true);
+  assert.equal(canAnnounceWeeklyMisses(task, fridayInZone, zone), true);
+  assert.equal(reminderState(task, saturdayInZone, zone).active, false);
+  assert.equal(canAnnounceWeeklyMisses(task, saturdayInZone, zone), false);
+  assert.equal(reminderState(task, new Date('2026-11-15T20:00:00Z'), zone).active, true);
+  const nextFriday = new Date('2026-11-20T20:00:00Z');
+  assert.equal(reminderState(task, nextFriday, zone).active, false);
+  assert.deepEqual(collectWeeklyMisses(task, nextFriday, zone).weeklyMisses.map(miss => miss.date), ['2026-11-13', '2026-11-15']);
+});
+
+test('校验多选值，重排不改计划，变更星期时保留旧记录', () => {
+  for (const weekdays of [[], [1, 1], [1, 7], ['1'], 1]) {
+    assert.throws(() => validateTask({ ...weeklyInput, weekdays }), /提醒日/);
+  }
+  const everyDay = validateTask({ ...weeklyInput, weekdays: [0, 1, 2, 3, 4, 5, 6] });
+  assert.equal(everyDay.frequency, 'weekly');
+  assert.deepEqual(everyDay.weekdays, [1, 2, 3, 4, 5, 6, 0]);
+  let task = validateTask({ ...weeklyInput, weekdays: [3, 1] }, null, weeklyAt('09'));
+  task = collectWeeklyMisses(task, weeklyAt('10'));
+  const edited = validateTask({ ...task, title: '更新标题', weekdays: [3, 1] }, task, weeklyAt('10'));
+  assert.deepEqual(edited.weekdays, [1, 3]);
+  assert.equal(edited.weeklySince, task.weeklySince);
+
+  const changed = validateTask({ ...edited, weekdays: [2] }, edited, weeklyAt('10'));
+  assert.equal(changed.weekday, 2);
+  assert.equal(changed.weekdays, undefined);
+  assert.equal(changed.weeklySince, '2026-11-10');
+  assert.deepEqual(changed.weeklyMisses, task.weeklyMisses);
+  assert.equal(reminderState(changed, weeklyAt('10')).active, true);
+  assert.equal(canAnnounceWeeklyMisses(changed, weeklyAt('14')), true);
 });

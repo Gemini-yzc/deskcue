@@ -12,10 +12,22 @@ function instant(value, label) {
 function isWeekly(task) {
   return task?.category === 'daily' && task.frequency === 'weekly';
 }
+function selectedWeekdays(task) {
+  return task.weekdays ?? [task.weekday];
+}
+function validateWeekdays(task) {
+  const selection = task.weekdays === undefined ? [task.weekday] : task.weekdays;
+  if (!Array.isArray(selection) || !selection.length || selection.length > 7) throw new Error('请选择至少一个有效的每周提醒日');
+  const days = [...selection];
+  if (days.some(day => !Number.isInteger(day) || day < 0 || day > 6) || new Set(days).size !== days.length) {
+    throw new Error('每周提醒日无效或重复');
+  }
+  return days.sort((a, b) => (a || 7) - (b || 7));
+}
 function weeklyToday(task, now, zone) {
   if (!isWeekly(task) || task.status !== 'active') return false;
   const day = dateKey(now, zone);
-  return weekday(day) === task.weekday &&
+  return selectedWeekdays(task).includes(weekday(day)) &&
     (!task.startDate || day >= task.startDate) && (!task.endDate || day <= task.endDate) &&
     (!task.weeklySince || day >= task.weeklySince);
 }
@@ -51,9 +63,12 @@ function validateTask(input, previous = null, now = new Date(), zone) {
     task.frequency = input.frequency ?? 'daily';
     if (!['daily', 'weekly'].includes(task.frequency)) throw new Error('重复频率无效');
     if (isWeekly(task)) {
-      if (!Number.isInteger(input.weekday) || input.weekday < 0 || input.weekday > 6) throw new Error('请选择每周提醒日');
-      task.weekday = input.weekday;
-      const sameSchedule = isWeekly(previous) && ['weekday', 'dailyTime', 'startDate', 'endDate', 'reminderMode'].every(key => previous[key] === task[key]);
+      const days = validateWeekdays(input);
+      task.weekday = days[0];
+      if (days.length > 1) task.weekdays = days;
+      const previousDays = isWeekly(previous) ? selectedWeekdays(previous) : [];
+      const sameSchedule = days.length === previousDays.length && days.every(day => previousDays.includes(day)) &&
+        ['dailyTime', 'startDate', 'endDate', 'reminderMode'].every(key => previous[key] === task[key]);
       task.weeklySince = sameSchedule ? previous.weeklySince : dateKey(now, zone);
     }
     if (isWeekly(previous) !== isWeekly(task)) {
@@ -70,13 +85,17 @@ function validateTask(input, previous = null, now = new Date(), zone) {
 function occurrenceDone(task, day) {
   return (isWeekly(task) ? task.weeklyDone : task.dailyDone) === day || !!task.completionDates?.includes(day);
 }
+function nextWeeklyDay(day, days) {
+  const first = weekday(day);
+  return moveDay(day, Math.min(...days.map(target => (target - first + 7) % 7)));
+}
 function collectWeeklyMisses(task, now, zone) {
   if (!isWeekly(task) || task.status !== 'active' || task.reminderMode === 'off') return task;
   const today = dateKey(now, zone);
   const first = task.startDate > task.weeklySince ? task.startDate : task.weeklySince;
   if (first >= today || (task.endDate && first > task.endDate)) return task;
-  const firstWeekday = weekday(first);
-  let day = moveDay(first, (task.weekday - firstWeekday + 7) % 7);
+  const days = selectedWeekdays(task);
+  let day = nextWeeklyDay(first, days);
   if (day >= today || (task.endDate && day > task.endDate)) return task;
 
   const misses = [...(task.weeklyMisses || [])];
@@ -85,9 +104,12 @@ function collectWeeklyMisses(task, now, zone) {
     if (!occurrenceDone(task, day) && !seen.has(day) && dateKey(wallInstant(`${day}T00:00`, zone), zone) === day) {
       misses.push({ date: day, notified: false, acknowledged: false });
     }
-    day = moveDay(day, 7);
+    day = nextWeeklyDay(moveDay(day, 1), days);
   }
   return { ...task, weeklySince: day, weeklyMisses: misses };
+}
+function canAnnounceWeeklyMisses(task, now, zone) {
+  return !(task.weekdays?.length > 1) || task.weekdays.includes(weekday(dateKey(now, zone)));
 }
 function acknowledgeWeeklyMisses(task, dates) {
   if (!Array.isArray(dates) || !dates.length || !dates.every(validDate)) throw new Error('请选择要确认的错过日期');
@@ -169,6 +191,6 @@ function completeTask(task, now = new Date(), zone) {
 }
 module.exports = {
   CATEGORIES, STATUSES, dateKey, validDate, validateTask, isWeekly, weeklyToday,
-  collectWeeklyMisses, acknowledgeWeeklyMisses, reminderState, cancelExpiry, purgeCanceled,
+  collectWeeklyMisses, canAnnounceWeeklyMisses, acknowledgeWeeklyMisses, reminderState, cancelExpiry, purgeCanceled,
   sortedTasks, completeTask, reorderTasks, occurrenceDay, occurrenceDone,
 };

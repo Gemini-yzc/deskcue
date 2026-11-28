@@ -1,6 +1,8 @@
 const $ = selector => document.querySelector(selector);
 const form = $('#task-form');
 const field = name => form.elements.namedItem(name);
+const weekdayField = $('#weekday-field');
+const weekdayOptions = weekdayField.querySelectorAll('input[name="weekdays"]');
 const escapeText = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let state;
 let editingId = null;
@@ -8,6 +10,7 @@ let saving = false;
 const collapsed = new Set();
 let draggingId = null;
 const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+const weekdayOrder = [1, 2, 3, 4, 5, 6, 0];
 const zoneLabels = new Map();
 let timeZones;
 let clockFormatter;
@@ -82,6 +85,20 @@ async function command(value) {
     error(''); return true;
   } catch (failure) { error(failure.message); return false; }
 }
+function selectedWeekdays(task) {
+  return task?.weekdays ?? (Number.isInteger(task?.weekday) ? [task.weekday] : []);
+}
+function weeklySchedule(task) {
+  const selected = selectedWeekdays(task);
+  const days = weekdayOrder.filter(day => selected.includes(day));
+  const full = '每' + days.map(day => weekdays[day]).join('、');
+  let short = full;
+  if (days.length === 7) short = '周一至周日';
+  else if (days.length === 5 && !days.includes(0) && !days.includes(6)) short = '周一至周五';
+  else if (days.length > 4) short = `每周${days.length}天`;
+  else if (days.length > 1) short = '周' + days.map(day => weekdays[day].slice(1)).join('');
+  return { full: `${full} ${task.dailyTime}`, short: `${short} ${task.dailyTime}` };
+}
 function taskMarkup(task) {
   const weekly = task.category === 'daily' && task.frequency === 'weekly';
   const dailyDone = task.occurrenceDone && (!weekly || task.weeklyToday);
@@ -90,15 +107,16 @@ function taskMarkup(task) {
   const overdue = task.overdue;
   const label = weekly ? (unavailable ? '仅可在安排当天确认本次' : '完成本次') :
     task.category === 'daily' ? '今日已做，停止当天提醒，明天恢复' : '完成事项，停止提醒';
-  const schedule = (weekly ? '每' + weekdays[task.weekday] : '每天') + ' ' + task.dailyTime;
+  const dailySchedule = `每天 ${task.dailyTime}`;
+  const schedule = weekly ? weeklySchedule(task) : { full: dailySchedule, short: dailySchedule };
   let date = '无截止';
-  if (task.category === 'daily') date = !weekly && task.endDate ? task.endDate.slice(5).replace('-', '/') + ' 止' : schedule;
+  if (task.category === 'daily') date = !weekly && task.endDate ? task.endDate.slice(5).replace('-', '/') + ' 止' : schedule.short;
   else if (task.dueAt) date = displayDate(task.dueAt);
   else if (task.category === 'waiting' && task.followUpAt) date = displayDate(task.followUpAt);
   if (dailyDone) date = '今日已完成';
   if (task.status === 'completed') date = '已完成';
   if (task.status === 'canceled') date = '已取消';
-  const details = [task.title, task.description, task.waitingFor ? '等待：' + task.waitingFor : '', task.category === 'daily' ? schedule + (task.endDate ? '，至 ' + task.endDate : '') : '', task.dueAt ? '截止 ' + task.dueAt.slice(0, 16) : '', task.followUpAt ? '跟进 ' + task.followUpAt.slice(0, 16) : '', task.reminderAt ? '提醒 ' + task.reminderAt.slice(0, 16) : '', zoneLabel(state.settings.effectiveTimeZone)].filter(Boolean).join('\n');
+  const details = [task.title, task.description, task.waitingFor ? '等待：' + task.waitingFor : '', task.category === 'daily' ? schedule.full + (task.endDate ? '，至 ' + task.endDate : '') : '', task.dueAt ? '截止 ' + task.dueAt.slice(0, 16) : '', task.followUpAt ? '跟进 ' + task.followUpAt.slice(0, 16) : '', task.reminderAt ? '提醒 ' + task.reminderAt.slice(0, 16) : '', zoneLabel(state.settings.effectiveTimeZone)].filter(Boolean).join('\n');
   const actions = active ? '<button data-action="edit">编辑事项</button>' + (task.category === 'waiting' ? '<button data-action="transfer">转为本人推进</button>' : '') + (task.category === 'daily' ? '<button data-action="finish">结束整项</button>' : '') + '<button data-action="cancel">取消事项</button>' : '<button data-action="restore">恢复事项</button>';
   return '<li class="task ' + (task.reminding ? 'reminding ' : '') + (dailyDone ? 'done' : '') + '" data-id="' + escapeText(task.id) + '">' +
     '<button class="task-grip" draggable="' + active + '" aria-label="拖动同类同优先级事项排序，或按Alt加上下方向键" title="拖拽调整同优先级顺序">⠿</button>' +
@@ -118,7 +136,7 @@ function render() {
   document.body.classList.toggle('compact', state.settings.compact);
   $('#compact').setAttribute('aria-label', state.settings.compact ? '展开面板' : '收起面板');
   $('#summary').textContent = `定期 ${active.filter(t => t.category === 'daily').length}　·　本人 ${active.filter(t => t.category === 'action').length}　·　外部 ${active.filter(t => t.category === 'waiting').length}${total ? `　｜ ${total} 项待确认` : ''}`;
-  $('#summary').classList.toggle('summary-alert', total > 0);
+  $('#summary').classList.toggle('summary-alert', state.tasks.some(task => task.reminding || task.missAlert));
   $('#mode').value = state.settings.mode;
   const zone = zoneLabel(state.settings.effectiveTimeZone);
   $('#time-zone').title = `事项时区 · ${zone}`;
@@ -156,8 +174,9 @@ function updateFields() {
   const daily = field('category').value === 'daily';
   const weekly = daily && field('frequency').value === 'weekly';
   $('#daily-fields').hidden = !daily;
-  $('#weekday-field').hidden = !weekly;
-  field('weekday').required = weekly;
+  weekdayField.hidden = !weekly;
+  weekdayField.disabled = !weekly;
+  if (!weekly) $('#weekday-error').hidden = true;
   const hasEndDate = daily && !$('#no-end-date').checked;
   field('endDate').disabled = !hasEndDate;
   field('endDate').required = hasEndDate;
@@ -165,15 +184,18 @@ function updateFields() {
   $('#deadline-field').hidden = daily;
   const mode = field('reminderMode');
   mode.options[2].disabled = daily;
-  mode.options[1].textContent = daily ? (weekly ? '每周按指定时间提醒' : '每天按指定时间提醒') : '按截止／跟进时间提前提醒';
+  mode.options[1].textContent = daily ? (weekly ? '在所选日期提醒' : '每天按指定时间提醒') : '按截止／跟进时间提前提醒';
   if (daily && mode.value === 'absolute') mode.value = 'relative';
   $('#lead-field').hidden = daily || mode.value !== 'relative';
   $('#absolute-field').hidden = mode.value !== 'absolute';
 }
 function edit(task = null) {
   editingId = task?.id || null; form.reset(); $('#form-error').hidden = true;
+  $('#weekday-error').hidden = true;
   $('#editor-title').textContent = task ? '编辑事项' : '新增事项';
-  for (const name of ['title', 'category', 'priority', 'description', 'waitingFor', 'startDate', 'endDate', 'dailyTime', 'frequency', 'weekday', 'reminderMode', 'leadMinutes']) if (task && task[name] !== undefined) field(name).value = task[name];
+  for (const name of ['title', 'category', 'priority', 'description', 'waitingFor', 'startDate', 'endDate', 'dailyTime', 'frequency', 'reminderMode', 'leadMinutes']) if (task && task[name] !== undefined) field(name).value = task[name];
+  const selected = selectedWeekdays(task);
+  for (const checkbox of weekdayOptions) checkbox.checked = selected.includes(Number(checkbox.value));
   $('#no-end-date').checked = !task?.endDate;
   if (!task) { field('category').value = 'daily'; field('reminderMode').value = 'relative'; field('startDate').value = state.today; }
   for (const name of ['followUpAt', 'reminderAt']) field(name).value = task?.[name]?.slice(0, 16) || '';
@@ -182,8 +204,16 @@ function edit(task = null) {
 }
 $('#task-form').addEventListener('submit', async event => {
   event.preventDefault(); if (saving) return;
-  const values = Object.fromEntries(new FormData(form)); values.priority = Number(values.priority); values.leadMinutes = Number(values.leadMinutes);
-  values.weekday = values.weekday === '' ? null : Number(values.weekday);
+  const data = new FormData(form);
+  const values = Object.fromEntries(data); values.priority = Number(values.priority); values.leadMinutes = Number(values.leadMinutes);
+  if (values.category === 'daily' && values.frequency === 'weekly') {
+    values.weekdays = data.getAll('weekdays').map(Number);
+    if (!values.weekdays.length) {
+      $('#weekday-error').hidden = false;
+      weekdayOptions[0].focus();
+      return;
+    }
+  }
   try {
     values.dueAt = values.category !== 'daily' && values.dueDate ? `${values.dueDate}T${values.dueTime || '18:00'}` : null;
     values.followUpAt = values.category === 'waiting' ? values.followUpAt || null : null;
@@ -226,6 +256,7 @@ $('#project').addEventListener('click', () => command({ type: 'open-project' }))
 for (const id of ['dismiss', 'cancel-edit']) $(`#${id}`).addEventListener('click', () => $('#editor').close());
 field('category').addEventListener('change', updateFields); field('reminderMode').addEventListener('change', updateFields);
 field('frequency').addEventListener('change', updateFields);
+weekdayField.addEventListener('change', event => { if (event.target.checked) $('#weekday-error').hidden = true; });
 $('#no-end-date').addEventListener('change', updateFields);
 $('#auto-sort').addEventListener('click', () => command({ type: 'auto-sort' }));
 $('#appearance').addEventListener('click', () => { error(''); $('#appearance-dialog').showModal(); });
